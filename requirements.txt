@@ -1,0 +1,4 @@
+apache-flink==1.17.0
+kafka-python==2.0.2
+psycopg2-binary==2.9.9
+faker==19.13.0
