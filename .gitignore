@@ -1,0 +1,16 @@
+# JARs — too large for GitHub, re-downloaded via download_jars.sh
+jars/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Flink logs
+log/
+*.log
+
+# Docker volumes
+postgres_data/
