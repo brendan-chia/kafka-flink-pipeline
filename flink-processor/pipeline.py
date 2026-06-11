@@ -11,12 +11,15 @@ Run with:
   python flink_job/pipeline.py
 """
 
+import sys
 import os
 import logging
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyflink.table import EnvironmentSettings, TableEnvironment
 from pyflink.table.udf import udf
 from pyflink.table.types import DataTypes
+from monitoring.metrics import start_metrics_pusher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-KAFKA_BOOTSTRAP     = 'localhost:9092'
+KAFKA_BOOTSTRAP     = 'localhost:29092'
 SOURCE_TOPIC        = 'user-events'
 DLQ_TOPIC           = 'user-events-dlq'
 CONSUMER_GROUP      = 'flink-grab-consumer'
@@ -46,6 +49,13 @@ CATEGORY_MAP = {
     'grocery_order':  'GROCERY',
 }
 
+PG_CONN_PARAMS = {
+    'host':     'localhost',
+    'port':     5432,
+    'dbname':   'grabevents',
+    'user':     POSTGRES_USER,
+    'password': POSTGRES_PASS,
+}
 
 @udf(result_type=DataTypes.STRING())
 def categorize(event_type: str) -> str:
@@ -113,6 +123,8 @@ def create_source_table(t_env: TableEnvironment):
             'topic'                         = '{SOURCE_TOPIC}',
             'properties.bootstrap.servers'  = '{KAFKA_BOOTSTRAP}',
             'properties.group.id'           = '{CONSUMER_GROUP}',
+            'properties.allow.auto.create.topics' = 'true',
+            'properties.metadata.max.age.ms' = '30000',
             'scan.startup.mode'             = 'earliest-offset',
             'format'                        = 'json',
             'json.ignore-parse-errors'      = 'true'
@@ -153,6 +165,7 @@ def create_dlq_sink(t_env: TableEnvironment):
             'connector'                     = 'kafka',
             'topic'                         = '{DLQ_TOPIC}',
             'properties.bootstrap.servers'  = '{KAFKA_BOOTSTRAP}',
+            'properties.security.protocol'  = 'PLAINTEXT',
             'format'                        = 'json'
         )
     """)
@@ -229,6 +242,8 @@ def main():
 
     logger.info("Creating Kafka DLQ sink...")
     create_dlq_sink(t_env)
+
+    start_metrics_pusher(PG_CONN_PARAMS, KAFKA_BOOTSTRAP, SOURCE_TOPIC, DLQ_TOPIC, CONSUMER_GROUP)  
 
     build_and_run(t_env)
 

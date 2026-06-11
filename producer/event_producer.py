@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 fake = Faker()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-KAFKA_BOOTSTRAP = 'localhost:9092'
+KAFKA_BOOTSTRAP = 'localhost:29092'
 TOPIC = 'user-events'
 EVENTS_PER_SECOND = 2   # Adjust as needed
 

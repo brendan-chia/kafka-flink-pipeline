@@ -1,0 +1,13 @@
+groups:
+  - name: flink_pipeline_alerts
+    rules:
+      - alert: HighDLQRate
+        expr: |
+          rate(flink_dlq_events_total[5m]) /
+          (rate(flink_events_processed_total[5m]) + rate(flink_dlq_events_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DLQ rate exceeded 5%"
+          description: "More than 5% of events are landing in the dead-letter queue over the last 5 minutes."
