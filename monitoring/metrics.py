@@ -1,50 +1,59 @@
 # monitoring/metrics.py
-"""
-Pipeline observability — Prometheus metrics pushed to Pushgateway.
+"""Application-level pipeline metrics exposed for Prometheus to scrape.
 
-Because the pipeline uses PyFlink Table API + StatementSet (pure SQL execution),
-we cannot instrument inside map/process functions. Instead, a background thread
-polls Postgres row counts and Kafka DLQ lag to derive metrics externally.
+Flink's native runtime metrics are exposed separately by its Prometheus metric
+reporter. This module owns only business and data-quality metrics that are
+derived from PostgreSQL and Kafka.
 """
 
 import threading
 import time
 import logging
+import os
 
 import psycopg2
 from kafka import KafkaConsumer, TopicPartition
-from prometheus_client import CollectorRegistry, Counter, Gauge, push_to_gateway
+from prometheus_client import CollectorRegistry, Gauge, start_http_server
 
 logger = logging.getLogger(__name__)
 
-PUSHGATEWAY_URL    = "localhost:9091"
-POLL_INTERVAL_SEC  = 10   # how often to poll & push
+METRICS_HOST = os.getenv("APPLICATION_METRICS_HOST", "0.0.0.0")
+METRICS_PORT = int(os.getenv("APPLICATION_METRICS_PORT", "8000"))
+POLL_INTERVAL_SEC = 10
 
 registry = CollectorRegistry()
 
 # ── Metric definitions ─────────────────────────────────────────────────────────
 
 events_processed_total = Gauge(
-    'flink_events_processed_total',
+    'pipeline_events_processed_total',
     'Total valid events written to PostgreSQL (cumulative row count)',
     registry=registry
 )
 
 dlq_events_total = Gauge(
-    'flink_dlq_events_total',
+    'pipeline_dlq_events_total',
     'Total invalid events in the DLQ topic (end offset)',
     registry=registry
 )
 
 dlq_rate = Gauge(
-    'flink_dlq_rate',
+    'pipeline_dlq_rate',
     'DLQ events as a fraction of total events (0.0 to 1.0)',
     registry=registry
 )
 
-consumer_lag = Gauge(
-    'flink_consumer_lag_messages',
-    'Kafka consumer lag: latest offset minus committed offset',
+collection_success = Gauge(
+    'pipeline_metrics_collection_success',
+    'Whether the latest collection succeeded (1) or failed (0)',
+    ['source'],
+    registry=registry
+)
+
+last_collection_timestamp = Gauge(
+    'pipeline_metrics_last_collection_timestamp_seconds',
+    'Unix timestamp of the latest successful metric collection',
+    ['source'],
     registry=registry
 )
 
@@ -87,79 +96,51 @@ def _get_dlq_end_offset(bootstrap_servers: str, dlq_topic: str) -> int:
         return -1
 
 
-def _get_consumer_lag(
-    bootstrap_servers: str,
-    source_topic: str,
-    consumer_group: str
-) -> int:
-    """
-    Lag = sum over partitions of (end_offset - committed_offset).
-    Uses a temporary consumer to read committed offsets for the group.
-    """
-    try:
-        from kafka import KafkaAdminClient
-        from kafka.structs import OffsetAndMetadata
+# ── HTTP metrics endpoint and background collector ────────────────────────────
 
-        consumer = KafkaConsumer(
-            bootstrap_servers=bootstrap_servers,
-            group_id=consumer_group,
-            enable_auto_commit=False
-        )
-        partitions = consumer.partitions_for_topic(source_topic) or set()
-        tps = [TopicPartition(source_topic, p) for p in partitions]
-        if not tps:
-            consumer.close()
-            return 0
-
-        end_offsets   = consumer.end_offsets(tps)
-        committed      = {tp: consumer.committed(tp) or 0 for tp in tps}
-        total_lag      = sum(end_offsets[tp] - committed[tp] for tp in tps)
-
-        consumer.close()
-        return max(total_lag, 0)
-    except Exception as e:
-        logger.warning(f"[metrics] Consumer lag query failed: {e}")
-        return -1
-
-
-# ── Background pusher ──────────────────────────────────────────────────────────
-
-def start_metrics_pusher(
+def start_metrics_server(
     pg_conn_params: dict,
     bootstrap_servers: str,
-    source_topic: str,
     dlq_topic: str,
-    consumer_group: str,
 ):
-    """
-    Spawns a daemon thread that polls metrics every POLL_INTERVAL_SEC seconds
-    and pushes them to the Pushgateway. Call this once before stmt_set.execute().
-    """
+    """Expose ``/metrics`` and refresh derived metrics in a daemon thread."""
+    start_http_server(METRICS_PORT, addr=METRICS_HOST, registry=registry)
+    logger.info(
+        "[metrics] Application metrics available at http://%s:%s/metrics",
+        METRICS_HOST,
+        METRICS_PORT,
+    )
+
     def _loop():
-        logger.info("[metrics] Background metrics pusher started.")
+        logger.info("[metrics] Background business-metrics collector started.")
         while True:
             processed = _get_processed_count(pg_conn_params)
-            dlq       = _get_dlq_end_offset(bootstrap_servers, dlq_topic)
+            dlq = _get_dlq_end_offset(bootstrap_servers, dlq_topic)
+            now = time.time()
 
             if processed >= 0:
                 events_processed_total.set(processed)
+                collection_success.labels(source="postgres").set(1)
+                last_collection_timestamp.labels(source="postgres").set(now)
+            else:
+                collection_success.labels(source="postgres").set(0)
+
             if dlq >= 0:
                 dlq_events_total.set(dlq)
+                collection_success.labels(source="kafka_dlq").set(1)
+                last_collection_timestamp.labels(source="kafka_dlq").set(now)
+            else:
+                collection_success.labels(source="kafka_dlq").set(0)
 
-            # DLQ rate: dlq / (processed + dlq), guard against divide-by-zero
-            total = (processed if processed >= 0 else 0) + (dlq if dlq >= 0 else 0)
-            if total > 0:
+            if processed >= 0 and dlq >= 0 and processed + dlq > 0:
+                total = processed + dlq
                 dlq_rate.set(dlq / total)
 
-            lag = _get_consumer_lag(bootstrap_servers, source_topic, consumer_group)
-            if lag >= 0:
-                consumer_lag.set(lag)
-
-            try:
-                push_to_gateway(PUSHGATEWAY_URL, job='flink_pipeline', registry=registry)
-                logger.debug(f"[metrics] Pushed — processed={processed}, dlq={dlq}, lag={lag}")
-            except Exception as e:
-                logger.warning(f"[metrics] Push failed: {e}")
+            logger.debug(
+                "[metrics] Refreshed processed=%s, dlq=%s",
+                processed,
+                dlq,
+            )
 
             time.sleep(POLL_INTERVAL_SEC)
 

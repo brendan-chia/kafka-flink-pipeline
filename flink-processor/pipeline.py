@@ -14,12 +14,21 @@ Run with:
 import sys
 import os
 import logging
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pathlib import Path
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FLINK_PLUGINS_DIR = os.path.join(PROJECT_ROOT, 'plugins')
+
+# Flink discovers metric reporters when its Java runtime starts. Set this before
+# importing PyFlink so the local MiniCluster can load the Prometheus plugin.
+os.environ.setdefault('FLINK_PLUGINS_DIR', FLINK_PLUGINS_DIR)
+sys.path.insert(0, PROJECT_ROOT)
+
+from pyflink.common import Configuration
 from pyflink.table import EnvironmentSettings, TableEnvironment
 from pyflink.table.udf import udf
 from pyflink.table.types import DataTypes
-from monitoring.metrics import start_metrics_pusher
+from monitoring.metrics import start_metrics_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +41,7 @@ KAFKA_BOOTSTRAP     = 'localhost:29092'
 SOURCE_TOPIC        = 'user-events'
 DLQ_TOPIC           = 'user-events-dlq'
 CONSUMER_GROUP      = 'flink-grab-consumer'
+FLINK_METRICS_PORTS = os.getenv('FLINK_METRICS_PORTS', '9249-9250')
 
 POSTGRES_URL        = 'jdbc:postgresql://localhost:5432/grabevents'
 POSTGRES_USER       = 'grabuser'
@@ -68,8 +78,7 @@ def categorize(event_type: str) -> str:
 # ── JAR Setup ──────────────────────────────────────────────────────────────────
 def get_jar_uris() -> str:
     """Build semicolon-separated list of JAR file:// URIs for Flink connectors."""
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    jar_dir = os.path.join(project_root, 'jars')
+    jar_dir = os.path.join(PROJECT_ROOT, 'jars')
 
     jar_names = [
     'flink-sql-connector-kafka-4.0.1-2.0.jar',
@@ -86,14 +95,48 @@ def get_jar_uris() -> str:
                 f"JAR not found: {path}\n"
                 f"Run ./download_jars.sh first."
             )
-        uris.append(f"file://{path}")
+        uris.append(Path(path).resolve().as_uri())
 
     return ";".join(uris)
 
 
+def ensure_prometheus_reporter_plugin():
+    """Fail early when the native Flink Prometheus reporter is unavailable."""
+    reporter_jar = os.path.join(
+        FLINK_PLUGINS_DIR,
+        'prometheus',
+        'flink-metrics-prometheus-2.2.1.jar',
+    )
+    if not os.path.exists(reporter_jar):
+        raise FileNotFoundError(
+            f"Flink Prometheus reporter not found: {reporter_jar}\n"
+            "Run ./download_jars.sh before starting the pipeline."
+        )
+
+
 # ── Table Environment Setup ─────────────────────────────────────────────────────
 def create_table_env() -> TableEnvironment:
-    env_settings = EnvironmentSettings.in_streaming_mode()
+    flink_config = Configuration()
+    flink_config.set_string('metrics.reporters', 'prom')
+    flink_config.set_string(
+        'metrics.reporter.prom.factory.class',
+        'org.apache.flink.metrics.prometheus.PrometheusReporterFactory',
+    )
+    flink_config.set_string('metrics.reporter.prom.port', FLINK_METRICS_PORTS)
+    flink_config.set_string(
+        'metrics.reporter.prom.scope.variables.additional',
+        'environment:local,pipeline:grab_events',
+    )
+    # Completed checkpoints make Kafka consumer-group offsets observable to
+    # Kafka Exporter and also expose checkpoint health through Flink metrics.
+    flink_config.set_string('execution.checkpointing.interval', '30 s')
+
+    env_settings = (
+        EnvironmentSettings.new_instance()
+        .in_streaming_mode()
+        .with_configuration(flink_config)
+        .build()
+    )
     t_env = TableEnvironment.create(env_settings)
 
     # Register JAR connectors
@@ -232,6 +275,7 @@ def main():
     logger.info("  Grab Real-Time Event Processing Pipeline")
     logger.info("=" * 60)
 
+    ensure_prometheus_reporter_plugin()
     t_env = create_table_env()
 
     logger.info("Creating source table (Kafka)...")
@@ -243,7 +287,7 @@ def main():
     logger.info("Creating Kafka DLQ sink...")
     create_dlq_sink(t_env)
 
-    start_metrics_pusher(PG_CONN_PARAMS, KAFKA_BOOTSTRAP, SOURCE_TOPIC, DLQ_TOPIC, CONSUMER_GROUP)  
+    start_metrics_server(PG_CONN_PARAMS, KAFKA_BOOTSTRAP, DLQ_TOPIC)
 
     build_and_run(t_env)
 

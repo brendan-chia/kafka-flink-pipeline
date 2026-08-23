@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kafka–Flink Pipeline Architecture</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #f8fafc; }
+    svg { display: block; width: 1600px; height: 900px; font-family: "Segoe UI", Arial, sans-serif; }
+    .section { fill: #ffffff; stroke-width: 2; }
+    .section-title { font-size: 27px; font-weight: 700; }
+    .card { fill: #ffffff; stroke-width: 2.5; }
+    .card-title { fill: #152238; font-size: 20px; font-weight: 700; text-anchor: middle; }
+    .card-subtitle { fill: #526077; font-size: 16px; text-anchor: middle; }
+    .flow { fill: none; stroke: #172033; stroke-width: 3; marker-end: url(#arrow); }
+    .metric-flow { fill: none; stroke: #1867c0; stroke-width: 2.5; stroke-dasharray: 8 7; marker-end: url(#blue-arrow); }
+    .label { fill: #172033; font-size: 16px; font-weight: 600; }
+    .small-label { fill: #1867c0; font-size: 14px; font-weight: 650; }
+  </style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Kafka and Flink event processing and pull-based monitoring architecture</title>
+  <desc id="desc">Events flow from a Python producer through Kafka and PyFlink into PostgreSQL or a dead-letter queue. Prometheus directly scrapes Flink, Kafka Exporter, PostgreSQL Exporter, and application business metrics, then supplies Grafana and Alertmanager.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#172033"/>
+    </marker>
+    <marker id="blue-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#1867c0"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#1e293b" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="900" fill="#f8fafc"/>
+  <text x="50" y="52" fill="#152238" font-size="30" font-weight="750">Grab-Inspired Kafka–Flink Event Pipeline</text>
+  <text x="50" y="82" fill="#64748b" font-size="17">Event processing, fault isolation, and pull-based observability</text>
+
+  <rect class="section" x="35" y="110" width="380" height="355" rx="20" stroke="#8db9f2" fill="#f5f9ff"/>
+  <text class="section-title" x="60" y="150" fill="#1d5fa7">Ingestion</text>
+  <rect class="section" x="435" y="110" width="625" height="355" rx="20" stroke="#78c7c2" fill="#f4fbfa"/>
+  <text class="section-title" x="460" y="150" fill="#147d78">Stream Processing</text>
+  <rect class="section" x="1080" y="110" width="485" height="355" rx="20" stroke="#b4a2df" fill="#faf8ff"/>
+  <text class="section-title" x="1105" y="150" fill="#6a4bb3">Storage &amp; Recovery</text>
+
+  <rect class="card" x="70" y="225" width="145" height="115" rx="14" stroke="#2878c8" filter="url(#shadow)"/>
+  <text class="card-title" x="142" y="270">Python</text>
+  <text class="card-title" x="142" y="296">producer</text>
+  <text class="card-subtitle" x="142" y="320">synthetic events</text>
+
+  <rect class="card" x="270" y="225" width="115" height="115" rx="14" stroke="#2878c8" filter="url(#shadow)"/>
+  <text class="card-title" x="328" y="277">Kafka</text>
+  <text class="card-subtitle" x="328" y="306">user-events</text>
+  <path class="flow" d="M215 282 H265"/>
+  <text class="label" x="223" y="266">JSON</text>
+
+  <rect class="card" x="475" y="225" width="145" height="115" rx="14" stroke="#188c86" filter="url(#shadow)"/>
+  <text class="card-title" x="548" y="270">PyFlink</text>
+  <text class="card-title" x="548" y="296">Table API</text>
+  <text class="card-subtitle" x="548" y="320">streaming job</text>
+  <path class="flow" d="M385 282 H470"/>
+
+  <path d="M710 215 L780 282 L710 349 L640 282 Z" fill="#ffffff" stroke="#188c86" stroke-width="2.5" filter="url(#shadow)"/>
+  <text class="card-title" x="710" y="288">Validate</text>
+  <path class="flow" d="M620 282 H635"/>
+
+  <rect class="card" x="860" y="185" width="160" height="92" rx="14" stroke="#188c86" filter="url(#shadow)"/>
+  <text class="card-title" x="940" y="224">Enrich</text>
+  <text class="card-subtitle" x="940" y="250">add category</text>
+  <rect class="card" x="860" y="310" width="160" height="92" rx="14" stroke="#d45a3a" filter="url(#shadow)"/>
+  <text class="card-title" x="940" y="348">Annotate</text>
+  <text class="card-subtitle" x="940" y="374">error reason</text>
+  <path class="flow" d="M780 282 H815 V231 H855"/>
+  <text class="label" x="792" y="218">Valid</text>
+  <path class="flow" d="M780 282 H815 V356 H855"/>
+  <text class="label" x="788" y="377">Invalid</text>
+
+  <rect class="card" x="1140" y="185" width="180" height="92" rx="14" stroke="#7657bd" filter="url(#shadow)"/>
+  <text class="card-title" x="1230" y="224">PostgreSQL</text>
+  <text class="card-subtitle" x="1230" y="250">processed_events</text>
+  <rect class="card" x="1140" y="310" width="180" height="92" rx="14" stroke="#7657bd" filter="url(#shadow)"/>
+  <text class="card-title" x="1230" y="348">Kafka DLQ</text>
+  <text class="card-subtitle" x="1230" y="374">user-events-dlq</text>
+  <path class="flow" d="M1020 231 H1135"/>
+  <path class="flow" d="M1020 356 H1135"/>
+
+  <rect class="section" x="35" y="500" width="1530" height="355" rx="20" stroke="#efb34f" fill="#fffaf1"/>
+  <text class="section-title" x="60" y="542" fill="#cc7b12">Pull-Based Observability</text>
+
+  <rect class="card" x="70" y="615" width="210" height="105" rx="14" stroke="#2878c8" filter="url(#shadow)"/>
+  <text class="card-title" x="175" y="654">Flink metrics</text>
+  <text class="card-subtitle" x="175" y="681">native reporter</text>
+  <text class="card-subtitle" x="175" y="704">:9249–9250</text>
+
+  <rect class="card" x="320" y="615" width="210" height="105" rx="14" stroke="#2878c8" filter="url(#shadow)"/>
+  <text class="card-title" x="425" y="654">Kafka Exporter</text>
+  <text class="card-subtitle" x="425" y="681">broker &amp; lag</text>
+  <text class="card-subtitle" x="425" y="704">:9308</text>
+
+  <rect class="card" x="570" y="615" width="210" height="105" rx="14" stroke="#2878c8" filter="url(#shadow)"/>
+  <text class="card-title" x="675" y="654">Postgres Exporter</text>
+  <text class="card-subtitle" x="675" y="681">database health</text>
+  <text class="card-subtitle" x="675" y="704">:9187</text>
+
+  <rect class="card" x="820" y="615" width="210" height="105" rx="14" stroke="#2878c8" filter="url(#shadow)"/>
+  <text class="card-title" x="925" y="654">Application metrics</text>
+  <text class="card-subtitle" x="925" y="681">outcomes &amp; DLQ rate</text>
+  <text class="card-subtitle" x="925" y="704">:8000</text>
+
+  <rect class="card" x="1090" y="615" width="180" height="105" rx="14" stroke="#e18a17" filter="url(#shadow)"/>
+  <text class="card-title" x="1180" y="663">Prometheus</text>
+  <text class="card-subtitle" x="1180" y="691">scrape &amp; rules</text>
+
+  <rect class="card" x="1340" y="570" width="175" height="85" rx="14" stroke="#e18a17" filter="url(#shadow)"/>
+  <text class="card-title" x="1428" y="610">Grafana</text>
+  <text class="card-subtitle" x="1428" y="635">dashboards</text>
+  <rect class="card" x="1340" y="690" width="175" height="85" rx="14" stroke="#e18a17" filter="url(#shadow)"/>
+  <text class="card-title" x="1428" y="730">Alertmanager</text>
+  <text class="card-subtitle" x="1428" y="755">route &amp; silence</text>
+
+  <path class="flow" d="M280 668 H1085"/>
+  <path class="flow" d="M530 668 H1085"/>
+  <path class="flow" d="M780 668 H1085"/>
+  <path class="flow" d="M1030 668 H1085"/>
+  <path class="flow" d="M1270 650 H1300 V612 H1335"/>
+  <path class="flow" d="M1270 686 H1300 V732 H1335"/>
+
+  <path class="metric-flow" d="M548 340 V565 H175 V610"/>
+  <text class="small-label" x="476" y="560">runtime metrics</text>
+  <path class="metric-flow" d="M328 340 V590 H425 V610"/>
+  <text class="small-label" x="337" y="585">broker/topic metrics</text>
+  <path class="metric-flow" d="M1230 277 V555 H675 V610"/>
+  <text class="small-label" x="692" y="550">database metrics</text>
+  <path class="metric-flow" d="M1230 402 V580 H925 V610"/>
+  <text class="small-label" x="947" y="575">business metrics</text>
+
+  <text x="60" y="825" fill="#64748b" font-size="14">Solid lines: event or scrape flow</text>
+  <text x="285" y="825" fill="#1867c0" font-size="14">Dashed lines: component-owned metric exposure</text>
+</svg>
+</body>
+</html>

@@ -1,10 +1,36 @@
 global:
   scrape_interval: 15s
-
-scrape_configs:
-  - job_name: 'flink_pipeline'
-    static_configs:
-      - targets: ['pushgateway:9091']
+  evaluation_interval: 15s
 
 rule_files:
-- /etc/prometheus/prometheus_alerts.yml
+  - /etc/prometheus/prometheus_alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['prometheus:9090']
+
+  # The PyFlink MiniCluster runs on the host. A port range allows its
+  # co-located JobManager and TaskManager reporters to bind independently.
+  - job_name: 'flink'
+    static_configs:
+      - targets:
+          - 'host.docker.internal:9249'
+          - 'host.docker.internal:9250'
+
+  - job_name: 'application'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['postgres-exporter:9187']

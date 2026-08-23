@@ -1,5 +1,6 @@
 # JARs — too large for GitHub, re-downloaded via download_jars.sh
 jars/
+plugins/
 
 # Python
 __pycache__/

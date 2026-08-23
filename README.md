@@ -10,13 +10,16 @@ The project is inspired by high-volume super-app event streams such as ride requ
 - Deliberately injects about 20% invalid events to exercise failure handling.
 - Validates and enriches events in a single PyFlink streaming job.
 - Writes valid records to PostgreSQL and invalid records to a Kafka DLQ.
-- Tracks processed records, DLQ volume, DLQ rate, and Kafka consumer lag.
+- Exposes native Flink runtime metrics and separate application data-quality metrics.
+- Monitors Kafka and PostgreSQL through dedicated Prometheus exporters.
 - Provisions Prometheus as the default Grafana data source.
-- Includes a Prometheus alert rule for a sustained high DLQ rate.
+- Routes pipeline and component-health alerts to Alertmanager.
 
 ## Architecture
 
-![Architecture of the Kafka and Flink event processing and observability pipeline](flink-processor/src/public/architecture.png)
+![Architecture of the Kafka and Flink event processing and pull-based observability pipeline](flink-processor/src/public/architecture.png)
+
+The detailed monitoring design and migration notes are in [MONITORING_ARCHITECTURE.md](MONITORING_ARCHITECTURE.md).
 
 ### Data flow
 
@@ -25,8 +28,9 @@ The project is inspired by high-volume super-app event streams such as ride requ
 3. A PyFlink `StatementSet` reads the source once and routes it into two sinks:
    - valid events are categorized and written to PostgreSQL;
    - invalid events are annotated with an error reason and written to `user-events-dlq`.
-4. A background collector polls PostgreSQL and Kafka every 10 seconds and pushes pipeline metrics to Pushgateway.
-5. Prometheus scrapes Pushgateway, evaluates alert rules, and serves the metrics to Grafana.
+4. Flink exposes native runtime metrics while a separate application endpoint exposes data-quality metrics.
+5. Kafka Exporter and PostgreSQL Exporter expose infrastructure metrics.
+6. Prometheus scrapes every endpoint, supplies Grafana, and routes alerts to Alertmanager.
 
 ## Technology Stack
 
@@ -36,9 +40,10 @@ The project is inspired by high-volume super-app event streams such as ride requ
 | Message broker | Confluent Kafka image 7.4.0 | Durable event ingestion and DLQ storage |
 | Stream processing | Apache Flink / PyFlink 2.2.1 | Validate, enrich, and route events |
 | Operational storage | PostgreSQL 15 | Persist successfully processed events |
-| Metric handoff | Prometheus Pushgateway 1.6.2 | Receive metrics from the local Flink process |
+| Metric exporters | Flink reporter, Kafka Exporter, PostgreSQL Exporter | Expose component-owned metrics |
 | Monitoring | Prometheus 2.47.0 | Scrape metrics and evaluate alerts |
 | Visualization | Grafana 10.1.0 | Explore and visualize pipeline health |
+| Alert routing | Alertmanager 0.32.1 | Group, silence, and route alerts |
 | Local infrastructure | Docker Compose | Run supporting services |
 
 ## Event Contract
@@ -71,7 +76,7 @@ An event is valid when `user_id` is present, `event_type` is supported, and `amo
 
 - Docker Desktop with Docker Compose
 - Python 3.11
-- A Java runtime compatible with the installed PyFlink release
+- Java 17 recommended for Flink 2.2 (Java 11 is also supported)
 - Bash and `curl` for downloading connector JARs
 
 All commands below are run from the `grab-se-backend` directory.
@@ -96,9 +101,15 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. Download the Flink connectors
+### 2. Download the Flink connectors and metrics reporter
 
-`pipeline.py` expects the following files under `jars/`:
+Run the helper from Git Bash, WSL, macOS, or Linux:
+
+```bash
+./download_jars.sh
+```
+
+`pipeline.py` expects the following connector files under `jars/`:
 
 ```text
 flink-sql-connector-kafka-4.0.1-2.0.jar
@@ -107,18 +118,7 @@ flink-connector-jdbc-postgres-4.0.0-2.0.jar
 postgresql-42.6.0.jar
 ```
 
-Download the matching artifacts from Maven Central:
-
-```bash
-mkdir -p jars
-curl -L -o jars/flink-sql-connector-kafka-4.0.1-2.0.jar https://repo.maven.apache.org/maven2/org/apache/flink/flink-sql-connector-kafka/4.0.1-2.0/flink-sql-connector-kafka-4.0.1-2.0.jar
-curl -L -o jars/flink-connector-jdbc-core-4.0.0-2.0.jar https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-jdbc-core/4.0.0-2.0/flink-connector-jdbc-core-4.0.0-2.0.jar
-curl -L -o jars/flink-connector-jdbc-postgres-4.0.0-2.0.jar https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-jdbc-postgres/4.0.0-2.0/flink-connector-jdbc-postgres-4.0.0-2.0.jar
-curl -L -o jars/postgresql-42.6.0.jar https://repo.maven.apache.org/maven2/org/postgresql/postgresql/42.6.0/postgresql-42.6.0.jar
-```
-
-> [!IMPORTANT]
-> The current `download_jars.sh` helper targets an older connector set and does not produce all four filenames expected by `pipeline.py`. Synchronize the helper with the list above before using it, or place the four matching artifacts in `jars/` manually.
+It also installs `flink-metrics-prometheus-2.2.1.jar` under `plugins/prometheus/`. The pipeline fails early with a clear error when the reporter is missing.
 
 ### 3. Start the infrastructure
 
@@ -161,7 +161,11 @@ The producer continues until you press `Ctrl+C`.
 | --- | --- | --- |
 | Grafana | <http://localhost:3000> | `admin` / `admin` |
 | Prometheus | <http://localhost:9090> | None |
-| Pushgateway | <http://localhost:9091> | None |
+| Alertmanager | <http://localhost:9093> | None |
+| Application metrics | <http://localhost:8000/metrics> | None |
+| Flink metrics | `http://localhost:9249/metrics`, `:9250/metrics` | None |
+| Kafka Exporter | <http://localhost:9308/metrics> | None |
+| PostgreSQL Exporter | <http://localhost:9187/metrics> | None |
 | Kafka from host | `localhost:29092` | None |
 | PostgreSQL | `localhost:5432/grabevents` | `grabuser` / `grabpass` |
 
@@ -171,12 +175,12 @@ Grafana automatically receives Prometheus as its default data source. The provis
 
 | Metric | Meaning |
 | --- | --- |
-| `flink_events_processed_total` | Current count of valid rows in PostgreSQL |
-| `flink_dlq_events_total` | Total end offset across DLQ partitions |
-| `flink_dlq_rate` | DLQ events divided by all observed events |
-| `flink_consumer_lag_messages` | Source end offset minus the Flink group offset |
+| `pipeline_events_processed_total` | Current count of valid rows in PostgreSQL |
+| `pipeline_dlq_events_total` | Total end offset across DLQ partitions |
+| `pipeline_dlq_rate` | DLQ events divided by all observed events |
+| `pipeline_metrics_collection_success` | Health of each business-metric source collection |
 
-Suggested Grafana panels include processed events, DLQ events, DLQ percentage, and consumer lag. Prometheus also loads the `HighDLQRate` warning rule from `monitoring/prometheus_alerts.yml`.
+Native Flink, Kafka, and PostgreSQL metric names are supplied by their respective reporters. Check <http://localhost:9090/targets> to verify every scrape job, then use `{job="flink"}`, `{job="kafka"}`, and `{job="postgresql"}` to explore them. Suggested Grafana panels include Flink throughput and restarts, Kafka consumer lag, PostgreSQL sessions, processed events, and DLQ percentage.
 
 ### Inspect processed records
 
@@ -212,6 +216,7 @@ Example DLQ record:
 ```text
 grab-se-backend/
 ├── docker-compose.yml                 # Local infrastructure
+├── MONITORING_ARCHITECTURE.md         # Monitoring implementation guide
 ├── requirements.txt                   # Python dependencies
 ├── download_jars.sh                   # Connector download helper
 ├── producer/
@@ -219,7 +224,8 @@ grab-se-backend/
 ├── flink-processor/
 │   └── pipeline.py                    # PyFlink routing pipeline
 ├── monitoring/
-│   ├── metrics.py                     # Metrics collector and pusher
+│   ├── metrics.py                     # Direct application metrics endpoint
+│   ├── alertmanager.yml               # Local alert routing
 │   ├── prometheus.yml                 # Scrape configuration
 │   ├── prometheus_alerts.yml          # Alert rules
 │   └── grafana/provisioning/          # Data source and dashboard provisioning
@@ -247,7 +253,7 @@ This project is configured for local learning and demonstration. Kafka uses plai
 
 ## Ideas for Extension
 
-- Add a provisioned Grafana dashboard and Alertmanager notification route.
+- Add a provisioned Grafana dashboard and external Alertmanager receiver.
 - Introduce Avro or Protobuf with a schema registry.
 - Add Flink checkpoints and restart strategies.
 - Containerize the producer and PyFlink job.

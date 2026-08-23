@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
@@ -42,11 +40,37 @@ services:
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
       - postgres_data:/var/lib/postgresql/data
 
-  pushgateway:
-    image: prom/pushgateway:v1.6.2
-    container_name: pushgateway
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    container_name: kafka-exporter
+    command:
+      - --kafka.server=kafka:9092
+    depends_on:
+      - kafka
     ports:
-      - "9091:9091"
+      - "9308:9308"
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    container_name: postgres-exporter
+    environment:
+      DATA_SOURCE_URI: postgres:5432/grabevents?sslmode=disable
+      DATA_SOURCE_USER: grabuser
+      DATA_SOURCE_PASS: grabpass
+    depends_on:
+      - postgres
+    ports:
+      - "9187:9187"
+
+  alertmanager:
+    image: quay.io/prometheus/alertmanager:v0.32.1
+    container_name: alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
 
   prometheus:
     image: prom/prometheus:v2.47.0
@@ -54,10 +78,14 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./monitoring/prometheus_alerts.yml:/etc/prometheus/prometheus_alerts.yml
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus_alerts.yml:/etc/prometheus/prometheus_alerts.yml:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
     depends_on:
-      - pushgateway
+      - kafka-exporter
+      - postgres-exporter
+      - alertmanager
 
   grafana:
     image: grafana/grafana:10.1.0
