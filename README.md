@@ -16,35 +16,7 @@ The project is inspired by high-volume super-app event streams such as ride requ
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph ingestion[Ingestion]
-        A[Python event producer] -->|JSON events| B[(Kafka<br/>user-events)]
-    end
-
-    subgraph processing[Stream Processing]
-        B --> C[PyFlink Table API]
-        C --> D{Validate}
-        D -->|Valid| E[Enrich with category]
-        D -->|Invalid| F[Attach error reason]
-    end
-
-    subgraph storage[Storage and Recovery]
-        E --> G[(PostgreSQL<br/>processed_events)]
-        F --> H[(Kafka DLQ<br/>user-events-dlq)]
-    end
-
-    subgraph observability[Observability]
-        I[Metrics collector] --> J[Prometheus Pushgateway]
-        J --> K[Prometheus]
-        K --> L[Grafana]
-        K --> M[High DLQ rate alert]
-    end
-
-    B -. consumer lag .-> I
-    G -. processed row count .-> I
-    H -. DLQ offset .-> I
-```
+![Architecture of the Kafka and Flink event processing and observability pipeline](flink-processor/src/public/architecture.png)
 
 ### Data flow
 
