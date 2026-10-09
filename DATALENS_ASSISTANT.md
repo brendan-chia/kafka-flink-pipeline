@@ -1,5 +1,8 @@
 # DataLens phase three
 
+Fixed evaluation and the isolated operator-controlled demo are documented in
+[DATALENS_EVALUATION.md](DATALENS_EVALUATION.md).
+
 Phase three adds a fixed LangGraph investigation and hosted OpenAI assessment to the
 existing read-only evidence API. Open http://127.0.0.1:8010/ for the investigation interface
 and http://localhost:3000 for Grafana. Grafana's operations dashboard links to DataLens;

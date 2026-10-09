@@ -56,8 +56,11 @@ class OpenAIModel:
     def __init__(self, config=None, transport_factory=httpx.Client):
         self.config = config or ModelConfig.from_env()
         self.transport_factory = transport_factory
+        # Per-adapter telemetry; benchmark creates a fresh adapter per case.
+        self.usage = None
 
     def assess(self, payload):
+        self.usage = None
         from openai import OpenAI
         # Explicit URL prevents ambient OPENAI_BASE_URL from redirecting credentials/evidence.
         # trust_env=False prevents ambient proxy settings from intercepting this request.
@@ -70,6 +73,10 @@ class OpenAIModel:
                         input=[dict(role='system', content=SYSTEM), dict(role='user', content=payload)],
                         text_format=ModelAssessment, max_output_tokens=self.config.max_output_tokens,
                         store=False)
+            if response.usage is not None:
+                self.usage = dict(input_tokens=response.usage.input_tokens,
+                                  output_tokens=response.usage.output_tokens,
+                                  total_tokens=response.usage.total_tokens)
             if response.status != 'completed' or response.output_parsed is None:
                 raise InvalidModelOutput()
             return response.output_parsed

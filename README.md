@@ -304,3 +304,8 @@ This project is configured for local learning and demonstration. Kafka uses plai
 - Benchmark analytics queries before adding a dedicated OLAP engine or a read-only AI operations assistant.
 
 Phase three adds bounded OpenAI-assisted investigations and an interface alongside Grafana. See [DATALENS_ASSISTANT.md](DATALENS_ASSISTANT.md) for configuration, citations, limits and verification.
+
+## DataLens evaluation
+
+Phase-four benchmark, reports and isolated manual-repair demo:
+[DATALENS_EVALUATION.md](DATALENS_EVALUATION.md).

@@ -197,7 +197,7 @@ class AdapterTests(unittest.TestCase):
             captured.append(json.loads(request.content))
             self.assertEqual(str(request.url),'https://api.openai.com/v1/responses')
             return httpx.Response(200,json=dict(id='resp_fixture',object='response',created_at=0,
-                status='completed',model='test-model',output=[dict(id='msg_fixture',type='message',
+                status='completed',model='test-model',usage=dict(input_tokens=123,output_tokens=7,total_tokens=130),output=[dict(id='msg_fixture',type='message',
                 status='completed',role='assistant',content=[dict(type='output_text',
                 text='{"hypotheses":[]}',annotations=[])])]))
 
@@ -206,6 +206,7 @@ class AdapterTests(unittest.TestCase):
             transport_factory=lambda **kwargs: httpx.Client(transport=transport,**kwargs))
         result = model.assess('{"citations":[]}')
         self.assertEqual(result.hypotheses,[])
+        self.assertEqual(model.usage, dict(input_tokens=123,output_tokens=7,total_tokens=130))
         self.assertEqual(len(captured),1)
         self.assertFalse(captured[0]['store'])
         self.assertTrue(captured[0]['text']['format']['strict'])

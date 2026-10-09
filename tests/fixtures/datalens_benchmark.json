@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "description": "Immutable v1 corpus. Truth describes constructed faults, not causes proven by DataLens. Arrival and interruption truth is withheld from model input. All money expectations are independent literals.",
+  "cases": [
+    {
+      "id": "late-payment",
+      "truth": "Second payment arrives after the window closes; retained by audit, omitted from finalized aggregate.",
+      "request": {"from_utc":"2026-01-01T00:00:00Z","until_utc":"2026-01-01T00:05:00Z","question":"Investigate disagreement between payment revenue and audit; consider late arrivals."},
+      "deliveries": [
+        {"received_timestamp_ms":1767225601000,"payload":"{\"event_id\":\"dl4-late-a\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225600000,\"amount\":0.10,\"currency\":\"MYR\"}"},
+        {"received_timestamp_ms":1767226020000,"payload":"{\"event_id\":\"dl4-late-b\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225602000,\"amount\":0.20,\"currency\":\"MYR\"}"}
+      ],
+      "stored":{"count":1,"revenue":"0.10"}, "quality":[],
+      "expected":{"status":"discrepancy","finding":"mismatch","numbers":{"audit_count":2,"audit_revenue":"0.30","stored_count":1,"stored_revenue":"0.10","revenue_delta":"0.20"},"invalid_reasons":[],"allowed_causes":["late_arrival","source_delivery","sink_or_recovery","window_configuration"],"candidate_targets":["late_arrival"]}
+    },
+    {
+      "id":"invalid-payment",
+      "truth":"One negative payment and one string amount are rejected. Valid audit and aggregate agree; source quality demonstrates invalid deliveries but no aggregate corruption.",
+      "request":{"from_utc":"2026-01-01T00:00:00Z","until_utc":"2026-01-01T00:05:00Z","question":"Investigate payment revenue and source validation evidence."},
+      "deliveries":[
+        {"received_timestamp_ms":1767225601000,"payload":"{\"event_id\":\"dl4-invalid-valid\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225600000,\"amount\":0.10,\"currency\":\"MYR\"}"},
+        {"received_timestamp_ms":1767225601000,"payload":"{\"event_id\":\"dl4-invalid-negative\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225600000,\"amount\":-1,\"currency\":\"MYR\"}"},
+        {"received_timestamp_ms":1767225601000,"payload":"{\"event_id\":\"dl4-invalid-string\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225600000,\"amount\":\"0.20\",\"currency\":\"MYR\"}"}
+      ],
+      "stored":{"count":1,"revenue":"0.10"},
+      "quality":[{"result_id":"00000000-0000-0000-0000-000000000401","observed_at":"2026-01-01T00:05:00Z","check_name":"source_validation_window","dataset":"user-events","status":"observed","range_start":"2026-01-01T00:00:00Z","range_end":"2026-01-01T00:05:00Z","evidence":{"valid_deliveries":1,"invalid_deliveries":2,"coverage_start":"2026-01-01T00:00:00Z","reasons":{"INVALID_AMOUNT":2}}}],
+      "expected":{"status":"no_discrepancy_found","finding":"match","numbers":{"audit_count":1,"audit_revenue":"0.10","stored_count":1,"stored_revenue":"0.10","revenue_delta":"0.00"},"invalid_reasons":["INVALID_AMOUNT","INVALID_AMOUNT"],"allowed_causes":[],"candidate_targets":[]}
+    },
+    {
+      "id":"processing-interruption",
+      "truth":"Audit write completes but aggregate processing is interrupted. Job logs are withheld, so outage remains unconfirmed.",
+      "request":{"from_utc":"2026-01-01T00:00:00Z","until_utc":"2026-01-01T00:05:00Z","question":"Investigate missing payment aggregate and possible processing interruption."},
+      "deliveries":[{"received_timestamp_ms":1767225601000,"payload":"{\"event_id\":\"dl4-interruption-a\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225600000,\"amount\":0.30,\"currency\":\"MYR\"}"}],
+      "stored":null,"quality":[],
+      "expected":{"status":"discrepancy","finding":"missing_aggregate","numbers":{"audit_count":1,"audit_revenue":"0.30","stored_count":null,"stored_revenue":null,"revenue_delta":"0.30"},"invalid_reasons":[],"allowed_causes":["late_arrival","source_delivery","sink_or_recovery","window_configuration"],"candidate_targets":["sink_or_recovery"]}
+    },
+    {
+      "id":"healthy-duplicate-replay",
+      "truth":"Identical immutable event is delivered twice. Audit upsert and window deduplication preserve one payment.",
+      "request":{"from_utc":"2026-01-01T00:00:00Z","until_utc":"2026-01-01T00:05:00Z","question":"Does duplicate replay corrupt payment revenue?"},
+      "deliveries":[
+        {"received_timestamp_ms":1767225601000,"payload":"{\"event_id\":\"dl4-replay-a\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225600000,\"amount\":0.30,\"currency\":\"MYR\"}"},
+        {"received_timestamp_ms":1767225602000,"payload":"{\"event_id\":\"dl4-replay-a\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225600000,\"amount\":0.30,\"currency\":\"MYR\"}"}
+      ],
+      "stored":{"count":1,"revenue":"0.30"},"quality":[],
+      "expected":{"status":"no_discrepancy_found","finding":"match","numbers":{"audit_count":1,"audit_revenue":"0.30","stored_count":1,"stored_revenue":"0.30","revenue_delta":"0.00"},"invalid_reasons":[],"allowed_causes":[],"candidate_targets":[]}
+    },
+    {
+      "id":"lower-payment-activity",
+      "truth":"Only one payment is produced, compared with the fixed external baseline of two payments totaling 0.30. Pipeline output is correct. Baseline is withheld because the API has no business-decline comparison.",
+      "baseline":{"count":2,"revenue":"0.30"},
+      "request":{"from_utc":"2026-01-01T00:00:00Z","until_utc":"2026-01-01T00:05:00Z","question":"Is lower payment revenue evidence of pipeline failure?"},
+      "deliveries":[{"received_timestamp_ms":1767225601000,"payload":"{\"event_id\":\"dl4-lower-a\",\"user_id\":\"dl4-user\",\"event_type\":\"payment\",\"timestamp\":1767225600000,\"amount\":0.10,\"currency\":\"MYR\"}"}],
+      "stored":{"count":1,"revenue":"0.10"},"quality":[],
+      "expected":{"status":"no_discrepancy_found","finding":"match","numbers":{"audit_count":1,"audit_revenue":"0.10","stored_count":1,"stored_revenue":"0.10","revenue_delta":"0.00"},"invalid_reasons":[],"allowed_causes":[],"candidate_targets":[]}
+    },
+    {
+      "id":"missing-evidence",
+      "truth":"No audit, aggregate or historical quality records. This cannot distinguish inactivity, collection gaps or lost deliveries.",
+      "request":{"from_utc":"2026-01-01T00:00:00Z","until_utc":"2026-01-01T00:05:00Z","question":"What caused missing payment revenue?"},
+      "deliveries":[],"stored":null,"quality":[],
+      "expected":{"status":"insufficient_evidence","finding":null,"numbers":{"audit_count":null,"audit_revenue":null,"stored_count":null,"stored_revenue":null,"revenue_delta":null},"invalid_reasons":[],"allowed_causes":[],"candidate_targets":[]}
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+name: DataLens fixed evaluation
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evaluation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: evaluation
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: evaluation_admin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U evaluation -d evaluation_admin"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_USER: evaluation
+      POSTGRES_PASS: disposable-ci-only
+      POSTGRES_DB: evaluation_admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements-dev.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python scripts/evaluate_datalens.py --output .flink-state/evaluation-offline.json
+      - run: python scripts/evaluate_datalens.py --postgres --output .flink-state/evaluation-postgres.json
+      - run: python scripts/demo_datalens.py --setup --expect baseline --output .flink-state/demo-01-baseline.json
+      - run: python scripts/demo_datalens.py --inject-late-payment --expect discrepancy --output .flink-state/demo-02-fault.json
+      - run: python scripts/demo_datalens.py --expect discrepancy --output .flink-state/demo-03-investigation.json
+      - run: python scripts/demo_datalens.py --repair --expect recovered --output .flink-state/demo-04-repair.json
+      - run: python scripts/demo_datalens.py --expect recovered --output .flink-state/demo-05-recovery.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: datalens-evaluation
+          path: .flink-state/*.json
+          if-no-files-found: error

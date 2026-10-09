@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "measured_date": "2026-10-09",
+  "timezone": "Asia/Kuala_Lumpur",
+  "initial_working_tree": "clean",
+  "phase_audit": {
+    "one": "implemented: catalogue, lineage, opt-in history, payment freshness, revenue comparison",
+    "two": "implemented: typed read-only investigation HTTP API and snapshot semantics",
+    "three": "implemented: bounded LangGraph, OpenAI adapter, provenance validation, investigation interface",
+    "runtime_verification": "not established by implementation or unit tests"
+  },
+  "unit_tests": {"status":"passed", "tests":82, "new_tests":8, "elapsed_seconds":6.393},
+  "deterministic_benchmark": {
+    "status":"passed",
+    "corpus_sha256":"a238ffdda1b92738ecf8c374c317f451c288627ce175efc88ca4d51c30140ba0",
+    "cases":6,
+    "passed":6,
+    "check_pass_counts":{"diagnosis_accuracy":6,"numerical_correctness":6,"evidence_support":6,"appropriate_uncertainty":6,"tool_usage":6,"payload_validation":6,"quality_evidence":6},
+    "mean_latency_ms":42.26,
+    "min_latency_ms":35.176,
+    "max_latency_ms":46.192,
+    "model_calls":0,
+    "hosted_cost_usd":"0",
+    "measurement_note":"One sample per case; run concurrently with unit checks. Fixture-backed graph execution only. No model call or hosted charge."
+  },
+  "checks": {
+    "python_compilation":"passed",
+    "pip_check":"passed",
+    "isolated_demo_compose_config":"passed",
+    "git_diff_check":"passed",
+    "sdk_usage_telemetry_mock_transport":"passed"
+  },
+  "blocked_checks": {
+    "postgres_benchmark":"OperationalError: configured PostgreSQL server unavailable",
+    "database_demo_and_recovery":"OperationalError: configured PostgreSQL server unavailable",
+    "live_model_accuracy_latency_cost":"Missing OPENAI_API_KEY and/or DATALENS_OPENAI_MODEL",
+    "real_taskmanager_interruption":"Docker daemon unavailable"
+  },
+  "reports":{
+    "offline":".flink-state/evaluation-offline.json",
+    "postgres":".flink-state/evaluation-postgres.json",
+    "live_model":".flink-state/evaluation-live.json",
+    "demo":".flink-state/demo-blocked.json"
+  },
+  "limitations":[
+    "No live-model candidate recall or model cost measurement was possible.",
+    "No local PostgreSQL or streaming end-to-end validation was possible; new CI covers PostgreSQL evaluation and demo stages.",
+    "Provenance and conservative hypothesis selection do not prove root cause.",
+    "Current assistant cannot establish a business decline or dedicated invalid-payload causal diagnosis.",
+    "Database demonstration reconstructs late-arrival evidence and manual repair; it does not inject an actual watermark fault."
+  ]
+}

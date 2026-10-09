@@ -1,0 +1,17 @@
+# Separate project and tmpfs storage: no production services or named volumes.
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: evaluation
+      POSTGRES_DB: evaluation_admin
+      POSTGRES_PASSWORD: ${DATALENS_DEMO_POSTGRES_PASS:?Set a private disposable database password in the environment}
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evaluation -d evaluation_admin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
