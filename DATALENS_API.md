@@ -128,3 +128,5 @@ requests leave both business/evidence rows unchanged, then removes only its test
 It requires database-creation permission for the test account. To resolve a disposable
 container's published host port, pass --container NAME. No test fixtures are added to your
 project database. CI runs the API unit tests, Compose validation and real PostgreSQL check.
+
+Phase three adds bounded OpenAI-assisted investigations and an interface alongside Grafana. See [DATALENS_ASSISTANT.md](DATALENS_ASSISTANT.md) for configuration, citations, limits and verification.

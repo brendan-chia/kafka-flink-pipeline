@@ -3,6 +3,7 @@ WORKDIR /opt/app
 COPY requirements-operations.txt requirements-datalens-api.txt ./
 RUN pip install --no-cache-dir -r requirements-datalens-api.txt
 COPY datalens ./datalens
+COPY DATALENS_EVIDENCE.md EVENT_TIME_BUSINESS_LOGIC.md CORRECTNESS_AND_RECOVERY.md OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md ./
 COPY scripts/datalens_api.py ./scripts/datalens_api.py
 ENV PYTHONPATH=/opt/app PYTHONUNBUFFERED=1
 USER 10001:10001

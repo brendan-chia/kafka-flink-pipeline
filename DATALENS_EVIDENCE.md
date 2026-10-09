@@ -120,3 +120,5 @@ in the recovery job. Unit coverage includes range validation, exact money, missi
 windows, incompatible configurations, observer coverage and persistence failure isolation.
 
 The phase-two HTTP investigation API is documented in [DATALENS_API.md](DATALENS_API.md).
+
+Phase three adds bounded OpenAI-assisted investigations and an interface alongside Grafana. See [DATALENS_ASSISTANT.md](DATALENS_ASSISTANT.md) for configuration, citations, limits and verification.

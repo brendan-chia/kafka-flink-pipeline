@@ -12,3 +12,7 @@ flink-processor/src
 .codex
 .agents
 .aws
+
+# Local API credentials
+.env
+.env.*

@@ -652,5 +652,17 @@
         }
       }
     ]
-  }
+  },
+  "links": [
+    {
+      "title": "Investigate with DataLens",
+      "type": "link",
+      "url": "http://localhost:8010/",
+      "targetBlank": true,
+      "includeVars": false,
+      "keepTime": false,
+      "asDropdown": false,
+      "tags": []
+    }
+  ]
 }

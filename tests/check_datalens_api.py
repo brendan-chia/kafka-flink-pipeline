@@ -11,7 +11,11 @@ from psycopg2 import sql
 from fastapi.testclient import TestClient
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from datalens import evidence
-from datalens.api import create_app, get_service
+from datalens.api import create_app, get_service, get_workflow
+from datalens.workflow import InvestigationWorkflow
+from datalens.llm import ModelConfig
+from datalens.assistant_models import ModelAssessment
+import json
 from datalens.investigation import EvidenceService
 
 
@@ -61,8 +65,20 @@ def main():
                     conn.rollback()
                 else:
                     raise AssertionError('Diagnostic connection allowed business-data writes')
+        class FixtureModel:
+            config = ModelConfig('fixture-only', 'fixture-model')
+            calls = 0
+
+            def assess(self, payload):
+                self.calls += 1
+                context = json.loads(payload)
+                ref = next(c['ref'] for c in context['citations'] if c['kind']=='runbook')
+                return ModelAssessment(hypotheses=[dict(cause='late_arrival', evidence_refs=['comparison',ref])])
+
+        model=FixtureModel()
         app=create_app()
         app.dependency_overrides[get_service]=lambda:service
+        app.dependency_overrides[get_workflow]=lambda:InvestigationWorkflow(service,model)
         headers={'X-DataLens-Key':os.environ.get('DATALENS_API_KEY','')}
         with TestClient(app,headers=headers) as client:
             assert client.get('/v1/health/ready').status_code==200
@@ -76,6 +92,17 @@ def main():
             assert report['comparison']['rows'][0]['stored_revenue']=='0.10',report
             assert len(report['historical_quality']['results'])==2
             assert report['historical_quality']['truncated'] is True
+            assistant=client.post('/v1/assistant/investigations',json=dict(body,question='Explain the revenue discrepancy'))
+            assert assistant.status_code==200,assistant.text
+            answer=assistant.json()
+            assert answer['model_status']=='completed',answer
+            assert model.calls==1
+            assert answer['evidence']['comparison']['rows'][0]['audit_revenue']=='0.30'
+            assert answer['suspected_causes']
+            refs={c['ref'] for c in answer['citations']}
+            for field in ('observations','suspected_causes','missing_evidence','uncertainty','manual_next_steps'):
+                assert all(set(item['evidence_refs']) <= refs for item in answer[field])
+            assert client.get('/v1/runbooks',params={'q':'late payment windows'}).json()['results']
             # Instant observations at start are included; at end are excluded.
             history=client.get('/v1/quality',params=dict(from_utc='2026-01-01T00:02:00Z',until_utc='2026-01-01T00:03:00Z',check_name='payment_freshness'))
             assert history.status_code==200,history.text
@@ -89,7 +116,7 @@ def main():
             assert cur.fetchone()==(1,__import__('decimal').Decimal('0.10'))
             cur.execute('SELECT count(*) FROM datalens.quality_results')
             assert cur.fetchone()[0]==3
-        print('PASS: real PostgreSQL investigation HTTP contracts, exact money, history overlap/truncation, lineage, enforced read-only access and unchanged business/evidence rows.')
+        print('PASS: real PostgreSQL evidence + bounded assistant HTTP contracts, exact money, history overlap/truncation, lineage, enforced read-only access and unchanged business/evidence rows.')
     finally:
         if fixture is not None:
             fixture.close()

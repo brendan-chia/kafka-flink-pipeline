@@ -16,3 +16,7 @@ log/
 # Docker volumes
 postgres_data/
 .flink-state/
+
+# Local API credentials
+.env
+.env.*
