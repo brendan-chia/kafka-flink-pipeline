@@ -1,0 +1,4 @@
+kafka-python==2.0.2
+psycopg2-binary==2.9.9
+faker==19.13.0
+prometheus_client==0.21.1

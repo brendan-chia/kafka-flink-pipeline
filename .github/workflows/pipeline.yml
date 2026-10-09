@@ -1,0 +1,75 @@
+name: Pipeline correctness and recovery
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  correctness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: 'requirements*.txt'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: pip install -r requirements-dev.txt
+      - run: bash download_jars.sh
+      - run: python -m unittest discover -s tests -v
+      - run: python tests/check_flink_plan.py
+      - run: python tests/check_flink_validator.py
+      - run: python tests/check_event_time_windows.py
+      - run: docker compose -f docker-compose.yml -f docker-compose.runtime.yml --profile traffic --profile tools config --quiet
+      - run: docker compose -f docker-compose.yml -f docker-compose.datalens.yml config --quiet
+      - name: Prometheus configuration and alert regression checks
+        run: |
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/monitoring:/etc/prometheus:ro" prom/prometheus:v2.47.0 check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/monitoring:/etc/prometheus:ro" prom/prometheus:v2.47.0 check config /etc/prometheus/prometheus.runtime.yml
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/monitoring:/etc/prometheus:ro" prom/prometheus:v2.47.0 test rules /etc/prometheus/prometheus_alerts_test.yml
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FLINK_CHECKPOINT_INTERVAL: '10 min'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements-datalens-api.txt httpx==0.28.1
+      - name: Start isolated runtime infrastructure
+        run: docker compose -f docker-compose.yml -f docker-compose.runtime.yml up -d --build --wait kafka postgres jobmanager taskmanager application-metrics
+      - name: Create source and DLQ topics before submission
+        run: |
+          docker exec kafka kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic user-events --partitions 2 --replication-factor 1
+          docker exec kafka kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic user-events-dlq --partitions 2 --replication-factor 1
+      - run: docker compose -f docker-compose.yml -f docker-compose.runtime.yml up -d pipeline
+      - run: python tests/check_event_time_sql.py
+      - run: python tests/check_operational_sql.py --docker
+      - run: python tests/check_datalens_sql.py
+      - run: python tests/check_datalens_api.py
+      - name: Verify crash after writes, checkpoint restore and source replay
+        run: python scripts/recovery_drill.py --inject-taskmanager-failure --timeout 240 --output .flink-state/ci-recovery.json
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p .flink-state
+          docker compose -f docker-compose.yml -f docker-compose.runtime.yml logs --no-color > .flink-state/ci-runtime.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovery-evidence
+          path: .flink-state/
+      - name: Stop CI containers
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.runtime.yml down

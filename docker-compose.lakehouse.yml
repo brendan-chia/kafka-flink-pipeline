@@ -1,0 +1,79 @@
+# Optional overlay: docker compose -f docker-compose.yml -f docker-compose.lakehouse.yml --profile lakehouse up -d
+services:
+  lakehouse-minio:
+    image: grab-lakehouse/minio:RELEASE.2025-10-15T17-29-55Z
+    pull_policy: build
+    build:
+      context: ./lakehouse/minio
+      dockerfile: Dockerfile
+    profiles: [lakehouse]
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: lakehouse
+      MINIO_ROOT_PASSWORD: lakehouse-local-password
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    volumes:
+      - lakehouse_objects:/data
+    mem_limit: 1g
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://localhost:9000/minio/health/live]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  lakehouse-bucket-init:
+    image: grab-lakehouse/mc:RELEASE.2025-08-13T08-35-41Z
+    pull_policy: build
+    build:
+      context: ./lakehouse/minio
+      dockerfile: Dockerfile.mc
+    profiles: [lakehouse]
+    depends_on:
+      lakehouse-minio:
+        condition: service_healthy
+    entrypoint: [/bin/sh, -c]
+    command:
+      - mc alias set local http://lakehouse-minio:9000 lakehouse lakehouse-local-password && mc mb --ignore-existing local/warehouse
+
+  lakehouse-catalog:
+    image: apache/iceberg-rest-fixture@sha256:db8de90b5b7693d4ac334c336f91d9bbe320d7b19f4f514d26de84cdfbcbfe8d
+    profiles: [lakehouse]
+    # The local fixture must be able to create SQLite files on the new volume.
+    user: "0:0"
+    depends_on:
+      lakehouse-bucket-init:
+        condition: service_completed_successfully
+    environment:
+      AWS_ACCESS_KEY_ID: lakehouse
+      AWS_SECRET_ACCESS_KEY: lakehouse-local-password
+      AWS_REGION: us-east-1
+      CATALOG_CATALOG_NAME: lakehouse
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:sqlite:/catalog/catalog.db?journal_mode=WAL
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://lakehouse-minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: 'true'
+      # Host Flink uses localhost, while catalog and Trino use Docker DNS.
+      # Clients must supply their own S3FileIO endpoint configuration.
+    ports:
+      - "18181:8181"
+    volumes:
+      - lakehouse_catalog:/catalog
+
+  lakehouse-trino:
+    image: trinodb/trino:483
+    profiles: [lakehouse]
+    depends_on:
+      - lakehouse-catalog
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./lakehouse/trino:/etc/trino:ro
+    mem_limit: 2g
+
+volumes:
+  lakehouse_objects:
+  lakehouse_catalog:

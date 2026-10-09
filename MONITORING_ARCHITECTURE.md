@@ -2,6 +2,11 @@
 
 This document records the migration from a Pushgateway-only monitoring path to a production-inspired Prometheus pull model.
 
+The subsequent operational enhancement is documented in
+[OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md](OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md),
+including the provisioned dashboard, rolling quality metrics, latency, runbooks
+and finite benchmarks.
+
 ## What changed
 
 Previously, a Python background thread calculated four metrics and pushed them to Pushgateway. Prometheus scraped only Pushgateway, so metrics named with a `flink_` prefix were derived application values rather than native Flink runtime metrics.
@@ -23,7 +28,7 @@ flowchart LR
 | Flink Prometheus reporter | JobManager, TaskManager, task, operator, JVM, throughput, and restart metrics | `flink` |
 | Kafka Exporter | Broker, topic, partition, offset, and consumer-group lag metrics | `kafka` |
 | PostgreSQL Exporter | Database availability, sessions, transactions, locks, and storage metrics | `postgresql` |
-| Application endpoint | Pipeline outcome and data-quality metrics derived from PostgreSQL and the Kafka DLQ | `application` |
+| Application endpoint | Audit latency/freshness, independent source quality observation and Kafka DLQ offsets | `application` |
 
 Pushgateway and its Docker service have been removed.
 
@@ -53,13 +58,19 @@ The PostgreSQL exporter currently uses the local development database credential
 
 ### Application business metrics
 
-`monitoring/metrics.py` no longer pushes metrics. It starts an HTTP server on `0.0.0.0:8000`, refreshes source data every 10 seconds, and exposes:
+`monitoring/metrics.py` starts an HTTP server on `0.0.0.0:8000`.
+PostgreSQL and DLQ offsets refresh every 10 seconds; an independent source
+observer polls continuously without committing offsets. Core metrics include:
 
 | Metric | Meaning |
 | --- | --- |
 | `pipeline_events_processed_total` | Current number of valid events persisted in PostgreSQL |
 | `pipeline_dlq_events_total` | Current end offset across Kafka DLQ partitions |
-| `pipeline_dlq_rate` | DLQ events divided by processed plus DLQ events |
+| `pipeline_dlq_rate` | Legacy cumulative fraction; retained for compatibility, not used for alerts |
+| `pipeline_invalid_fraction_window` | Five-minute invalid fraction of observed source records |
+| `pipeline_invalid_events_window{reason=...}` | Recent invalid source records by bounded primary reason |
+| `pipeline_audit_latency_seconds{clock=...,quantile=...}` | Recent event/broker-to-processing latency percentiles |
+| `pipeline_audit_freshness_seconds` | Age of latest audit processing timestamp |
 | `pipeline_metrics_collection_success{source=...}` | Whether the latest source collection succeeded |
 | `pipeline_metrics_last_collection_timestamp_seconds{source=...}` | Last successful source collection time |
 
@@ -71,7 +82,8 @@ Prometheus evaluates `monitoring/prometheus_alerts.yml` and sends firing alerts 
 
 Configured alerts cover:
 
-- high DLQ rate;
+- high recent source invalid rate (legacy alert name `HighDLQRate`);
+- stale audit with recent valid input, failed checkpoints and sustained backpressure;
 - unavailable Flink metrics endpoints;
 - unavailable application metrics;
 - failed business-metric source collection;
@@ -153,7 +165,7 @@ All expected Prometheus jobs should report at least one healthy target. Useful i
 ```promql
 up
 {job="flink"}
-pipeline_dlq_rate
+pipeline_invalid_fraction_window
 kafka_brokers
 kafka_consumergroup_lag
 pg_up
@@ -170,10 +182,10 @@ If the Flink and application targets remain down while their local URLs work, ch
 This is production-inspired rather than production-grade. Flink 2.2 supports Java 11, but Java 17 is its recommended runtime. The next operational improvements should be:
 
 - run Flink as an actual JobManager/TaskManager cluster instead of an embedded local MiniCluster;
-- enable and test checkpoints, restart strategies, and state recovery;
+- run live failure/recovery drills for the persistent checkpoints and restart strategy added in [CORRECTNESS_AND_RECOVERY.md](CORRECTNESS_AND_RECOVERY.md);
 - give PostgreSQL Exporter a dedicated least-privileged account;
 - configure authenticated and encrypted connections;
 - store credentials outside Compose;
-- provision Grafana dashboards and an external Alertmanager receiver;
+- configure an external Alertmanager receiver;
 - add persistent Prometheus storage and retention settings;
 - test failure, recovery, stale-metric, and alert-delivery scenarios.

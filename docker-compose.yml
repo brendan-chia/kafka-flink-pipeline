@@ -25,7 +25,11 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
-      KAFKA_LOG_RETENTION_HOURS: 1
+      # Recovery must finish before source records expire.
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_MESSAGE_TIMESTAMP_TYPE: LogAppendTime
+    volumes:
+      - kafka_data:/var/lib/kafka/data
 
   postgres:
     image: postgres:15
@@ -38,6 +42,7 @@ services:
       - "5432:5432"
     volumes:
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./sql/migrations/004_datalens_evidence.sql:/docker-entrypoint-initdb.d/z004_datalens_evidence.sql:ro
       - postgres_data:/var/lib/postgresql/data
 
   kafka-exporter:
@@ -101,5 +106,6 @@ services:
       - prometheus
 
 volumes:
+  kafka_data:
   postgres_data:
   grafana_data:

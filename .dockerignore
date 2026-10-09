@@ -1,0 +1,14 @@
+.git
+.venv
+kafka
+__pycache__
+**/__pycache__
+.flink-state
+jars
+plugins
+*.log
+flink-processor/target
+flink-processor/src
+.codex
+.agents
+.aws

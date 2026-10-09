@@ -1,0 +1,9 @@
+FROM python:3.11.11-slim-bookworm
+WORKDIR /opt/app
+COPY requirements-operations.txt requirements-datalens-api.txt ./
+RUN pip install --no-cache-dir -r requirements-datalens-api.txt
+COPY datalens ./datalens
+COPY scripts/datalens_api.py ./scripts/datalens_api.py
+ENV PYTHONPATH=/opt/app PYTHONUNBUFFERED=1
+USER 10001:10001
+CMD ["python", "scripts/datalens_api.py", "--host", "0.0.0.0"]

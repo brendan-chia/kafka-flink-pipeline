@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:grab:events:v1",
+  "title": "Grab activity event v1",
+  "description": "Missing schema_version denotes legacy v1. Runtime also enforces exact cents, Unicode safety, unique JSON keys and received-time future skew.",
+  "type": "object",
+  "required": ["event_id", "user_id", "event_type", "timestamp", "amount", "currency"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^(?![\\s\\S]*\\u0000)(?=[\\s\\S]*\\S)[\\s\\S]+$"},
+    "user_id": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^(?![\\s\\S]*\\u0000)(?=[\\s\\S]*\\S)[\\s\\S]+$"},
+    "event_type": {"enum": ["food_order", "ride_request", "payment", "grocery_order"]},
+    "timestamp": {"type": "integer", "minimum": 1, "maximum": 253402300799999},
+    "amount": {"type": "number", "minimum": 0, "maximum": 99999999.99, "multipleOf": 0.01},
+    "currency": {"type": "string", "pattern": "^[A-Z]{3}$", "minLength": 3, "maxLength": 3}
+  },
+  "additionalProperties": true
+}

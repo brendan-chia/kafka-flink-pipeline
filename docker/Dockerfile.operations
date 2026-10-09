@@ -1,0 +1,12 @@
+FROM python:3.11.11-slim-bookworm
+WORKDIR /opt/app
+COPY requirements-operations.txt ./
+RUN pip install --no-cache-dir -r requirements-operations.txt
+COPY event_contract.py lakehouse_config.py lakehouse_ops.py ./
+COPY producer ./producer
+COPY monitoring/metrics.py ./monitoring/metrics.py
+COPY datalens ./datalens
+COPY sql/migrations/004_datalens_evidence.sql ./sql/migrations/004_datalens_evidence.sql
+COPY scripts ./scripts
+ENV PYTHONPATH=/opt/app PYTHONUNBUFFERED=1
+CMD ["python", "producer/event_producer.py"]

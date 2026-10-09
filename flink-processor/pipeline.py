@@ -1,295 +1,323 @@
-"""
-Grab Event Processing Pipeline
--------------------------------
-PyFlink Table API pipeline that:
-  1. Reads user activity events from Kafka
-  2. Validates and enriches valid events
-  3. Sinks valid events → PostgreSQL
-  4. Sinks invalid events → Kafka DLQ topic
+"""Validate every Kafka record, upsert valid events, and preserve invalid payloads."""
 
-Run with:
-  python flink_job/pipeline.py
-"""
-
-import sys
-import os
 import logging
+import os
+import sys
 from pathlib import Path
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FLINK_PLUGINS_DIR = os.path.join(PROJECT_ROOT, 'plugins')
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+FLINK_PLUGINS_DIR = PROJECT_ROOT / 'plugins'
+os.environ.setdefault('FLINK_PLUGINS_DIR', str(FLINK_PLUGINS_DIR))
+sys.path.insert(0, str(PROJECT_ROOT))
 
-# Flink discovers metric reporters when its Java runtime starts. Set this before
-# importing PyFlink so the local MiniCluster can load the Prometheus plugin.
-os.environ.setdefault('FLINK_PLUGINS_DIR', FLINK_PLUGINS_DIR)
-sys.path.insert(0, PROJECT_ROOT)
+import lakehouse_config
+lakehouse_config.configure_gateway_classpath(PROJECT_ROOT)
 
 from pyflink.common import Configuration
 from pyflink.table import EnvironmentSettings, TableEnvironment
-from pyflink.table.udf import udf
+from pyflink.table.udf import udf, udtf
 from pyflink.table.types import DataTypes
+from event_contract import decode_event, epoch_milliseconds
 from monitoring.metrics import start_metrics_server
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [FLINK] %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [FLINK] %(message)s')
 logger = logging.getLogger(__name__)
-
-# ── Config ─────────────────────────────────────────────────────────────────────
-KAFKA_BOOTSTRAP     = 'localhost:29092'
-SOURCE_TOPIC        = 'user-events'
-DLQ_TOPIC           = 'user-events-dlq'
-CONSUMER_GROUP      = 'flink-grab-consumer'
+KAFKA_BOOTSTRAP = os.getenv('KAFKA_BOOTSTRAP', 'localhost:29092')
+SOURCE_TOPIC = os.getenv('SOURCE_TOPIC', 'user-events')
+DLQ_TOPIC = os.getenv('DLQ_TOPIC', 'user-events-dlq')
+CONSUMER_GROUP = os.getenv('CONSUMER_GROUP', 'flink-grab-consumer')
 FLINK_METRICS_PORTS = os.getenv('FLINK_METRICS_PORTS', '9249-9250')
-
-POSTGRES_URL        = 'jdbc:postgresql://localhost:5432/grabevents'
-POSTGRES_USER       = 'grabuser'
-POSTGRES_PASS       = 'grabpass'
-POSTGRES_TABLE      = 'processed_events'
-
-# Valid event types — anything else goes to DLQ
-VALID_TYPES_SQL     = "('food_order', 'ride_request', 'payment', 'grocery_order')"
-
-# ── UDF: Event Type → Category ──────────────────────────────────────────────────
-CATEGORY_MAP = {
-    'food_order':     'FOOD',
-    'ride_request':   'TRANSPORT',
-    'payment':        'FINANCE',
-    'grocery_order':  'GROCERY',
-}
-
+POSTGRES_URL = os.getenv('POSTGRES_URL', 'jdbc:postgresql://localhost:5432/grabevents')
+POSTGRES_USER = os.getenv('POSTGRES_USER', 'grabuser')
+POSTGRES_PASS = os.getenv('POSTGRES_PASS', 'grabpass')
+POSTGRES_TABLE = 'processed_events'
 PG_CONN_PARAMS = {
-    'host':     'localhost',
-    'port':     5432,
-    'dbname':   'grabevents',
-    'user':     POSTGRES_USER,
-    'password': POSTGRES_PASS,
+    'host': os.getenv('POSTGRES_HOST', 'localhost'),
+    'port': int(os.getenv('POSTGRES_PORT', '5432')),
+    'dbname': os.getenv('POSTGRES_DB', 'grabevents'),
+    'user': POSTGRES_USER, 'password': POSTGRES_PASS,
 }
+WINDOW_SECONDS = int(os.getenv('EVENT_WINDOW_SECONDS', '300'))
+WATERMARK_SECONDS = int(os.getenv('EVENT_WATERMARK_SECONDS', '10'))
+IDLE_SECONDS = int(os.getenv('EVENT_IDLE_SECONDS', '60'))
+FUTURE_SKEW_SECONDS = int(os.getenv('EVENT_MAX_FUTURE_SKEW_SECONDS', '60'))
+if not 0 < WINDOW_SECONDS <= 86400 or not 0 <= WATERMARK_SECONDS <= 86400 or IDLE_SECONDS <= 0:
+    raise ValueError('Window/idleness must be positive and watermark delay non-negative.')
+if FUTURE_SKEW_SECONDS < 0:
+    raise ValueError('EVENT_MAX_FUTURE_SKEW_SECONDS must be non-negative.')
 
-@udf(result_type=DataTypes.STRING())
-def categorize(event_type: str) -> str:
-    """Enriches an event_type string with a human-readable category label."""
-    if event_type is None:
-        return 'UNKNOWN'
-    return CATEGORY_MAP.get(event_type, 'UNKNOWN')
+
+def decode_received_event(payload, ingested_at=None):
+    received_ms = epoch_milliseconds(ingested_at) if ingested_at is not None else None
+    return decode_event(payload, received_ms, FUTURE_SKEW_SECONDS * 1000)
 
 
-# ── JAR Setup ──────────────────────────────────────────────────────────────────
-def get_jar_uris() -> str:
-    """Build semicolon-separated list of JAR file:// URIs for Flink connectors."""
-    jar_dir = os.path.join(PROJECT_ROOT, 'jars')
+@udf(result_type=DataTypes.BIGINT())
+def validated_timestamp(payload, ingested_at=None):
+    # Flink's WatermarkAssigner rejects null rowtime. Invalid records receive
+    # epoch zero, never a malformed/future timestamp, and are filtered before windows.
+    return decode_received_event(payload, ingested_at)[3] or 0
 
-    jar_names = [
-    'flink-sql-connector-kafka-4.0.1-2.0.jar',
-    'flink-connector-jdbc-core-4.0.0-2.0.jar',
-    'flink-connector-jdbc-postgres-4.0.0-2.0.jar',
-    'postgresql-42.6.0.jar',
-    ]
+@udtf(result_types=[DataTypes.STRING(), DataTypes.STRING(), DataTypes.STRING(),
+                    DataTypes.BIGINT(), DataTypes.DECIMAL(10, 2), DataTypes.STRING(),
+                    DataTypes.STRING(), DataTypes.STRING(), DataTypes.STRING(),
+                    DataTypes.STRING()])
+def parse_event(payload, ingested_at=None):
+    yield decode_received_event(payload, ingested_at)
 
-    uris = []
-    for name in jar_names:
-        path = os.path.join(jar_dir, name)
-        if not os.path.exists(path):
-            raise FileNotFoundError(
-                f"JAR not found: {path}\n"
-                f"Run ./download_jars.sh first."
-            )
-        uris.append(Path(path).resolve().as_uri())
 
-    return ";".join(uris)
+def sql_literal(value):
+    return value.replace("'", "''")
+
+
+def sql_interval(seconds):
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, seconds = divmod(rest, 60)
+    return f"INTERVAL '{days} {hours:02}:{minutes:02}:{seconds:02}' DAY TO SECOND"
+
+
+def get_jar_uris():
+    names = ['flink-sql-connector-kafka-4.0.1-2.0.jar',
+             'flink-connector-jdbc-core-4.0.0-2.0.jar',
+             'flink-connector-jdbc-postgres-4.0.0-2.0.jar', 'postgresql-42.6.0.jar']
+    if lakehouse_config.enabled():
+        names.extend(lakehouse_config.JARS)
+    paths = [PROJECT_ROOT / 'jars' / name for name in names]
+    for path in paths:
+        if not path.exists():
+            raise FileNotFoundError(f'JAR not found: {path}. Run ./download_jars.sh and, for Iceberg, python scripts/download_lakehouse_jars.py.')
+    return ';'.join(path.as_uri() for path in paths)
 
 
 def ensure_prometheus_reporter_plugin():
-    """Fail early when the native Flink Prometheus reporter is unavailable."""
-    reporter_jar = os.path.join(
-        FLINK_PLUGINS_DIR,
-        'prometheus',
-        'flink-metrics-prometheus-2.2.1.jar',
-    )
-    if not os.path.exists(reporter_jar):
-        raise FileNotFoundError(
-            f"Flink Prometheus reporter not found: {reporter_jar}\n"
-            "Run ./download_jars.sh before starting the pipeline."
-        )
+    path = FLINK_PLUGINS_DIR / 'prometheus' / 'flink-metrics-prometheus-2.2.1.jar'
+    if not path.exists():
+        raise FileNotFoundError(f'Flink reporter not found: {path}. Run ./download_jars.sh first.')
 
 
-# ── Table Environment Setup ─────────────────────────────────────────────────────
-def create_table_env() -> TableEnvironment:
-    flink_config = Configuration()
-    flink_config.set_string('metrics.reporters', 'prom')
-    flink_config.set_string(
-        'metrics.reporter.prom.factory.class',
-        'org.apache.flink.metrics.prometheus.PrometheusReporterFactory',
-    )
-    flink_config.set_string('metrics.reporter.prom.port', FLINK_METRICS_PORTS)
-    flink_config.set_string(
-        'metrics.reporter.prom.scope.variables.additional',
-        'environment:local,pipeline:grab_events',
-    )
-    # Completed checkpoints make Kafka consumer-group offsets observable to
-    # Kafka Exporter and also expose checkpoint health through Flink metrics.
-    flink_config.set_string('execution.checkpointing.interval', '30 s')
+def create_table_env():
+    jar_uris = get_jar_uris()
+    if lakehouse_config.enabled():
+        from pyflink.java_gateway import get_gateway
+        version = get_gateway().jvm.java.lang.System.getProperty('java.specification.version')
+        if int(version.split('.')[-1]) < 17:
+            raise RuntimeError('Iceberg 1.12 requires Java 17+. Set JAVA_HOME to your Java 17 installation before starting Python.')
+    state_dir = PROJECT_ROOT / '.flink-state'
+    config = Configuration()
+    settings = {
+        'metrics.reporters': 'prom',
+        'metrics.reporter.prom.factory.class': 'org.apache.flink.metrics.prometheus.PrometheusReporterFactory',
+        'metrics.reporter.prom.port': FLINK_METRICS_PORTS,
+        'metrics.reporter.prom.scope.variables.additional': 'environment:local,pipeline:grab_events',
+        'execution.checkpointing.interval': os.getenv('FLINK_CHECKPOINT_INTERVAL', '30 s'),
+        'execution.checkpointing.mode': 'EXACTLY_ONCE',
+        'execution.checkpointing.storage': 'filesystem',
+        'execution.checkpointing.dir': os.getenv('FLINK_CHECKPOINT_DIR', (state_dir / 'checkpoints').as_uri()),
+        'execution.checkpointing.savepoint-dir': os.getenv('FLINK_SAVEPOINT_DIR', (state_dir / 'savepoints').as_uri()),
+        'execution.checkpointing.externalized-checkpoint-retention': 'RETAIN_ON_CANCELLATION',
+        'execution.checkpointing.num-retained': '3',
+        'execution.checkpointing.timeout': '2 min',
+        'execution.checkpointing.min-pause': '5 s',
+        'execution.checkpointing.max-concurrent-checkpoints': '1',
+        'restart-strategy.type': 'fixed-delay',
+        'restart-strategy.fixed-delay.attempts': '10',
+        'restart-strategy.fixed-delay.delay': '10 s',
+        'table.local-time-zone': 'UTC',
+        'table.exec.uid.generation': 'ALWAYS',
+        'python.executable': os.getenv('FLINK_PYTHON_EXECUTABLE', sys.executable),
+        'table.exec.source.idle-timeout': f'{IDLE_SECONDS} s',
+        'pipeline.auto-watermark-interval': '200 ms',
+    }
+    restore_path = os.getenv('FLINK_RESTORE_PATH')
+    if restore_path:
+        settings['execution.state-recovery.path'] = restore_path
+        settings['execution.state-recovery.ignore-unclaimed-state'] = 'false'
+        settings['execution.state-recovery.claim-mode'] = 'NO_CLAIM'
+    for key, value in settings.items():
+        config.set_string(key, value)
+    env = TableEnvironment.create(EnvironmentSettings.new_instance().in_streaming_mode()
+                                  .with_configuration(config).build())
+    env.get_config().set('pipeline.jars', jar_uris)
+    env.get_config().set('parallelism.default', os.getenv('FLINK_PARALLELISM', '1'))
+    env.add_python_file(str(PROJECT_ROOT / 'event_contract.py'))
+    env.create_temporary_system_function('parse_event', parse_event)
+    env.create_temporary_system_function('validated_timestamp', validated_timestamp)
+    logger.info('Checkpoint directory: %s; restore: %s', settings['execution.checkpointing.dir'], restore_path or 'fresh replay')
+    return env
 
-    env_settings = (
-        EnvironmentSettings.new_instance()
-        .in_streaming_mode()
-        .with_configuration(flink_config)
-        .build()
-    )
-    t_env = TableEnvironment.create(env_settings)
 
-    # Register JAR connectors
-    t_env.get_config().set("pipeline.jars", get_jar_uris())
-
-    # Parallelism 1 is fine for local development
-    t_env.get_config().set("parallelism.default", "1")
-
-    # Register the categorize UDF
-    t_env.create_temporary_function("categorize", categorize)
-
-    return t_env
-
-
-# ── Table Definitions ──────────────────────────────────────────────────────────
-def create_source_table(t_env: TableEnvironment):
-    """Kafka source: reads raw JSON events from user-events topic."""
-    t_env.execute_sql(f"""
+def create_source_table(env):
+    env.execute_sql(f"""
         CREATE TABLE raw_events (
-            user_id    STRING,
-            event_type STRING,
-            `timestamp` BIGINT,
-            amount     DOUBLE,
-            proc_time  AS PROCTIME()
+            raw_payload BYTES,
+            source_topic STRING METADATA FROM 'topic' VIRTUAL,
+            source_partition INT METADATA FROM 'partition' VIRTUAL,
+            source_offset BIGINT METADATA FROM 'offset' VIRTUAL,
+            ingested_at TIMESTAMP_LTZ(3) METADATA FROM 'timestamp' VIRTUAL,
+            event_time AS TO_TIMESTAMP_LTZ(validated_timestamp(raw_payload, ingested_at), 3),
+            WATERMARK FOR event_time AS event_time - {sql_interval(WATERMARK_SECONDS)}
         ) WITH (
-            'connector'                     = 'kafka',
-            'topic'                         = '{SOURCE_TOPIC}',
-            'properties.bootstrap.servers'  = '{KAFKA_BOOTSTRAP}',
-            'properties.group.id'           = '{CONSUMER_GROUP}',
-            'properties.allow.auto.create.topics' = 'true',
-            'properties.metadata.max.age.ms' = '30000',
-            'scan.startup.mode'             = 'earliest-offset',
-            'format'                        = 'json',
-            'json.ignore-parse-errors'      = 'true'
+            'connector' = 'kafka', 'topic' = '{sql_literal(SOURCE_TOPIC)}',
+            'properties.bootstrap.servers' = '{sql_literal(KAFKA_BOOTSTRAP)}',
+            'properties.group.id' = '{sql_literal(CONSUMER_GROUP)}',
+            'scan.startup.mode' = 'earliest-offset', 'format' = 'raw'
         )
+    """)
+    create_validation_view(env)
+
+
+def create_validation_view(env):
+    env.execute_sql("""
+        CREATE TEMPORARY VIEW validated_events AS
+        SELECT r.source_topic, r.source_partition, r.source_offset, r.ingested_at, r.event_time,
+               r.raw_payload IS NULL AS payload_is_null,
+               CONCAT(r.source_topic, ':', CAST(r.source_partition AS STRING), ':',
+                      CAST(r.source_offset AS STRING)) AS record_id, p.*
+        FROM raw_events AS r,
+        LATERAL TABLE(parse_event(r.raw_payload, r.ingested_at)) AS p(
+            event_id, user_id, event_type, event_timestamp_ms, amount, currency,
+            category, error_reason, validation_errors, raw_payload_base64)
     """)
 
 
-def create_postgres_sink(t_env: TableEnvironment):
-    """PostgreSQL JDBC sink for valid, enriched events."""
-    t_env.execute_sql(f"""
+def create_business_views(env):
+    env.execute_sql('''
+        CREATE TEMPORARY VIEW valid_business_events AS
+        SELECT event_id, event_type, currency, amount, event_time
+        FROM validated_events WHERE error_reason IS NULL AND event_time IS NOT NULL
+    ''')
+    env.execute_sql(f'''
+        CREATE TEMPORARY VIEW unique_window_events AS
+        SELECT event_id, event_type, currency, amount, window_time
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY window_start, window_end, event_id
+                ORDER BY event_time ASC) AS row_num
+            FROM TABLE(TUMBLE(TABLE valid_business_events,
+                       DESCRIPTOR(event_time), {sql_interval(WINDOW_SECONDS)}))
+        ) WHERE row_num = 1
+    ''')
+
+
+def business_window_query(payment_only=False):
+    # Cascading windows use window_time, preserving the event-time attribute.
+    # The second window finalizes the deduplicated output with bounded state.
+    columns = ('currency, COUNT(*) AS payment_count, SUM(amount) AS revenue'
+               if payment_only else 'event_type, currency, COUNT(*) AS event_count')
+    group = 'currency' if payment_only else 'event_type, currency'
+    where = "WHERE event_type = 'payment'" if payment_only else ''
+    return f'''
+        SELECT CAST(window_start AS TIMESTAMP(3)) AS window_start,
+               CAST(window_end AS TIMESTAMP(3)) AS window_end, {columns}
+        FROM TABLE(TUMBLE(TABLE unique_window_events,
+                   DESCRIPTOR(window_time), {sql_interval(WINDOW_SECONDS)}))
+        {where}
+        GROUP BY window_start, window_end, {group}
+    '''
+
+
+def create_business_sinks(env):
+    for table, columns, key in [
+        ('payment_revenue_windows', 'currency STRING, payment_count BIGINT, revenue DECIMAL(38, 2)',
+         'window_start, window_end, currency'),
+        ('activity_windows', 'event_type STRING, currency STRING, event_count BIGINT',
+         'window_start, window_end, event_type, currency'),
+    ]:
+        env.execute_sql(f'''
+            CREATE TABLE {table} (
+                window_start TIMESTAMP(3), window_end TIMESTAMP(3), {columns},
+                PRIMARY KEY ({key}) NOT ENFORCED
+            ) WITH (
+                'connector' = 'jdbc', 'url' = '{sql_literal(POSTGRES_URL)}',
+                'table-name' = '{table}', 'username' = '{sql_literal(POSTGRES_USER)}',
+                'password' = '{sql_literal(POSTGRES_PASS)}', 'driver' = 'org.postgresql.Driver',
+                'sink.buffer-flush.interval' = '1 s', 'sink.max-retries' = '3'
+            )
+        ''')
+
+
+def create_postgres_sink(env):
+    env.execute_sql(f"""
         CREATE TABLE processed_events (
-            user_id      STRING,
-            event_type   STRING,
-            amount       DOUBLE,
-            category     STRING,
-            processed_at TIMESTAMP(3)
+            event_id STRING NOT NULL, user_id STRING, event_type STRING,
+            event_timestamp_ms BIGINT, amount DECIMAL(10, 2), currency STRING,
+            category STRING, ingested_at TIMESTAMP(3), processed_at TIMESTAMP(3),
+            source_topic STRING, source_partition INT, source_offset BIGINT,
+            PRIMARY KEY (event_id) NOT ENFORCED
         ) WITH (
-            'connector'  = 'jdbc',
-            'url'        = '{POSTGRES_URL}',
-            'table-name' = '{POSTGRES_TABLE}',
-            'username'   = '{POSTGRES_USER}',
-            'password'   = '{POSTGRES_PASS}',
-            'driver'     = 'org.postgresql.Driver'
+            'connector' = 'jdbc', 'url' = '{sql_literal(POSTGRES_URL)}',
+            'table-name' = '{POSTGRES_TABLE}', 'username' = '{sql_literal(POSTGRES_USER)}',
+            'password' = '{sql_literal(POSTGRES_PASS)}', 'driver' = 'org.postgresql.Driver',
+            'sink.buffer-flush.max-rows' = '100', 'sink.buffer-flush.interval' = '1 s',
+            'sink.max-retries' = '3'
         )
     """)
 
 
-def create_dlq_sink(t_env: TableEnvironment):
-    """Kafka DLQ sink for invalid/malformed events."""
-    t_env.execute_sql(f"""
+def create_dlq_sink(env):
+    env.execute_sql(f"""
         CREATE TABLE dlq_events (
-            user_id      STRING,
-            event_type   STRING,
-            `timestamp`  BIGINT,
-            amount       DOUBLE,
-            error_reason STRING
+            record_id STRING, source_topic STRING, source_partition INT,
+            source_offset BIGINT, ingested_at TIMESTAMP_LTZ(3),
+            raw_payload_base64 STRING, error_reason STRING, validation_errors STRING
         ) WITH (
-            'connector'                     = 'kafka',
-            'topic'                         = '{DLQ_TOPIC}',
-            'properties.bootstrap.servers'  = '{KAFKA_BOOTSTRAP}',
-            'properties.security.protocol'  = 'PLAINTEXT',
-            'format'                        = 'json'
+            'connector' = 'kafka', 'topic' = '{sql_literal(DLQ_TOPIC)}',
+            'properties.bootstrap.servers' = '{sql_literal(KAFKA_BOOTSTRAP)}',
+            'sink.delivery-guarantee' = 'at-least-once', 'format' = 'json'
         )
     """)
 
 
-# ── Pipeline Logic ─────────────────────────────────────────────────────────────
-def build_and_run(t_env: TableEnvironment):
-    """
-    StatementSet runs both inserts as a SINGLE Flink job,
-    allowing the Kafka source to be shared (no double-reading).
-    """
-    stmt_set = t_env.create_statement_set()
-
-    # ── INSERT 1: Valid events → PostgreSQL ────────────────────────────────────
-    stmt_set.add_insert_sql(f"""
+def build_statement_set(env):
+    statements = env.create_statement_set()
+    statements.add_insert_sql("""
         INSERT INTO processed_events
-        SELECT
-            user_id,
-            event_type,
-            amount,
-            categorize(event_type)  AS category,
-            CURRENT_TIMESTAMP       AS processed_at
-        FROM raw_events
-        WHERE user_id    IS NOT NULL
-          AND event_type IN {VALID_TYPES_SQL}
-          AND amount     >= 0.0
+        SELECT event_id, user_id, event_type, event_timestamp_ms, amount, currency,
+               category, CAST(ingested_at AS TIMESTAMP(3)),
+               CAST(CURRENT_TIMESTAMP AS TIMESTAMP(3)), source_topic, source_partition, source_offset
+        FROM validated_events WHERE error_reason IS NULL
     """)
-
-    # ── INSERT 2: Invalid events → Kafka DLQ ──────────────────────────────────
-    # CASE statement identifies the FIRST failing validation rule.
-    stmt_set.add_insert_sql(f"""
+    statements.add_insert_sql("""
         INSERT INTO dlq_events
-        SELECT
-            user_id,
-            event_type,
-            `timestamp`,
-            amount,
-            CASE
-                WHEN user_id    IS NULL                  THEN 'NULL_USER_ID'
-                WHEN event_type NOT IN {VALID_TYPES_SQL} THEN 'INVALID_EVENT_TYPE'
-                WHEN amount     < 0.0                    THEN 'NEGATIVE_AMOUNT'
-                ELSE                                          'MULTIPLE_ERRORS'
-            END AS error_reason
-        FROM raw_events
-        WHERE user_id    IS NULL
-           OR event_type NOT IN {VALID_TYPES_SQL}
-           OR amount     < 0.0
+        SELECT record_id, source_topic, source_partition, source_offset, ingested_at,
+               raw_payload_base64, error_reason, validation_errors
+        FROM validated_events WHERE error_reason IS NOT NULL
     """)
+    statements.add_insert_sql('INSERT INTO payment_revenue_windows ' + business_window_query(True))
+    statements.add_insert_sql('INSERT INTO activity_windows ' + business_window_query())
+    if lakehouse_config.enabled():
+        lakehouse_config.add_inserts(statements, business_window_query(True))
+    return statements
 
-    logger.info("Submitting Flink job...")
-    result = stmt_set.execute()
-    logger.info(f"Pipeline running. Waiting for events...")
 
-    # Block until the job is cancelled (Ctrl+C)
+def build_and_run(env):
+    result = build_statement_set(env).execute()
+    client = result.get_job_client()
+    logger.info('Job ID: %s', client.get_job_id())
     try:
-        result.get_job_client().get_job_execution_result().result()
+        client.get_job_execution_result().result()
     except KeyboardInterrupt:
-        logger.info("Pipeline stopped by user.")
+        logger.info('Cancelling job; retained checkpoints can be restored explicitly.')
+        client.cancel().result()
 
 
-# ── Entry Point ────────────────────────────────────────────────────────────────
 def main():
-    logger.info("=" * 60)
-    logger.info("  Grab Real-Time Event Processing Pipeline")
-    logger.info("=" * 60)
-
     ensure_prometheus_reporter_plugin()
-    t_env = create_table_env()
-
-    logger.info("Creating source table (Kafka)...")
-    create_source_table(t_env)
-
-    logger.info("Creating PostgreSQL sink...")
-    create_postgres_sink(t_env)
-
-    logger.info("Creating Kafka DLQ sink...")
-    create_dlq_sink(t_env)
-
-    start_metrics_server(PG_CONN_PARAMS, KAFKA_BOOTSTRAP, DLQ_TOPIC)
-
-    build_and_run(t_env)
+    env = create_table_env()
+    create_source_table(env)
+    create_postgres_sink(env)
+    create_dlq_sink(env)
+    create_business_views(env)
+    create_business_sinks(env)
+    if lakehouse_config.enabled():
+        lakehouse_config.create_catalog(env)
+        lakehouse_config.create_sinks(env)
+    # Cluster deployment runs a separate collector so resubmissions cannot bind
+    # the same metrics port or interrupt observation when the client exits.
+    if os.getenv('APPLICATION_METRICS_ENABLED', '1') == '1':
+        start_metrics_server(PG_CONN_PARAMS, KAFKA_BOOTSTRAP, DLQ_TOPIC)
+    build_and_run(env)
 
 
 if __name__ == '__main__':

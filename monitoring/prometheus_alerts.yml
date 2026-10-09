@@ -2,13 +2,51 @@ groups:
   - name: pipeline_health
     rules:
       - alert: HighDLQRate
-        expr: pipeline_dlq_rate > 0.05
+        expr: |
+          (pipeline_invalid_fraction_window > 0.05)
+          and on(job, instance) (sum by(job, instance) (pipeline_input_events_window) >= 20)
+          and on(job, instance) (pipeline_metrics_collection_success{source="kafka_source"} == 1)
+          and on(job, instance) (time() - pipeline_metrics_last_collection_timestamp_seconds{source="kafka_source"} < 30)
+          and on(job, instance) (time() - pipeline_observer_coverage_start_timestamp_seconds >= 300)
         for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "DLQ rate exceeded 5%"
-          description: "More than 5% of observed events are in the dead-letter queue."
+          summary: "Recent source invalid rate exceeded 5%"
+          description: "More than 5% of at least 20 observed source records in five minutes are invalid. Fault profile intentionally exercises this alert. See OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md."
+
+      - alert: PipelineAuditStalled
+        expr: |
+          (pipeline_audit_freshness_seconds > 60 or pipeline_audit_recent_rows == 0)
+          and on(job, instance) (pipeline_input_events_window{outcome="valid"} >= 20)
+          and on(job, instance) (pipeline_metrics_collection_success{source="postgres"} == 1)
+          and on(job, instance) (pipeline_metrics_collection_success{source="kafka_source"} == 1)
+          and on(job, instance) (time() - pipeline_metrics_last_collection_timestamp_seconds{source="postgres"} < 30)
+          and on(job, instance) (time() - pipeline_metrics_last_collection_timestamp_seconds{source="kafka_source"} < 30)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Audit is stale while valid source records were recently observed"
+          description: "Check producer activity, sink availability, backpressure and recovery. Replays of existing IDs can also trigger this condition. See OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md."
+
+      - alert: FlinkCheckpointFailures
+        expr: increase(flink_jobmanager_job_numberOfFailedCheckpoints[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Flink checkpoints are failing"
+          description: "Inspect checkpoint storage, sink errors and checkpoint duration. See OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md."
+
+      - alert: FlinkBackpressure
+        expr: flink_taskmanager_job_task_backPressuredTimeMsPerSecond > 500
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Flink task spends over 50% of time backpressured"
+          description: "Inspect downstream sink latency and capacity before increasing input rate. See OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md."
 
       - alert: FlinkMetricsUnavailable
         expr: max(up{job="flink"}) < 1

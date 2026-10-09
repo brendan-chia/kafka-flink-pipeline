@@ -1,0 +1,21 @@
+# Optional API, independent of the Flink runtime overlay.
+services:
+  datalens-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.datalens-api
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: grabevents
+      POSTGRES_USER: ${DATALENS_POSTGRES_USER:-grabuser}
+      POSTGRES_PASS: ${DATALENS_POSTGRES_PASS:-grabpass}
+      DATALENS_API_KEY: ${DATALENS_API_KEY:-}
+    ports:
+      - '127.0.0.1:8010:8010'
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8010/health/live", timeout=3)']
+      interval: 10s
+      timeout: 5s
+      retries: 3

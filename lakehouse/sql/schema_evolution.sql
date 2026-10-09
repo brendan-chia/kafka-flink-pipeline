@@ -1,0 +1,5 @@
+-- Example reviewed migration. Apply with writers stopped; update sink INSERT
+-- projections/types in lakehouse_config.py before restarting the writer.
+-- ALTER TABLE lakehouse.analytics.validated_events ADD COLUMN merchant_id VARCHAR;
+-- ALTER TABLE lakehouse.analytics.validated_events SET PROPERTIES partitioning=ARRAY['event_date'];
+-- Never change event_id, monetary scale, or timestamp meaning without a contract migration.

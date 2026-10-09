@@ -1,0 +1,7 @@
+[
+  {"name": "legacy-payment", "event": {"event_id": "legacy", "user_id": "user", "event_type": "payment", "timestamp": 1790985600000, "amount": 24.50, "currency": "MYR"}, "error": null},
+  {"name": "versioned-payment", "event": {"schema_version": 1, "event_id": "versioned", "user_id": "user", "event_type": "payment", "timestamp": 1790985600000, "amount": 0.01, "currency": "USD"}, "error": null},
+  {"name": "additive-metadata", "event": {"schema_version": 1, "event_id": "extra", "user_id": "user", "event_type": "food_order", "timestamp": 1790985600000, "amount": 99999999.99, "currency": "MYR", "trace_id": "optional"}, "error": null},
+  {"name": "unknown-version", "event": {"schema_version": 2, "event_id": "unknown", "user_id": "user", "event_type": "payment", "timestamp": 1790985600000, "amount": 1, "currency": "MYR"}, "error": "UNSUPPORTED_SCHEMA_VERSION"},
+  {"name": "fractional-cent", "event": {"schema_version": 1, "event_id": "precision", "user_id": "user", "event_type": "payment", "timestamp": 1790985600000, "amount": 1.001, "currency": "MYR"}, "error": "INVALID_AMOUNT_PRECISION"}
+]

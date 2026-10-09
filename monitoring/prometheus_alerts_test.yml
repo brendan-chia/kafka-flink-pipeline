@@ -1,0 +1,59 @@
+rule_files:
+  - prometheus_alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: sustained-invalid-source-alerts-after-coverage
+    interval: 1m
+    input_series:
+      - series: 'pipeline_invalid_fraction_window{job="application",instance="local"}'
+        values: '0.2+0x10'
+      - series: 'pipeline_input_events_window{job="application",instance="local",outcome="valid"}'
+        values: '80+0x10'
+      - series: 'pipeline_input_events_window{job="application",instance="local",outcome="invalid"}'
+        values: '20+0x10'
+      - series: 'pipeline_metrics_collection_success{job="application",instance="local",source="kafka_source"}'
+        values: '1+0x10'
+      - series: 'pipeline_metrics_last_collection_timestamp_seconds{job="application",instance="local",source="kafka_source"}'
+        values: '0+60x10'
+      - series: 'pipeline_observer_coverage_start_timestamp_seconds{job="application",instance="local"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HighDLQRate
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: HighDLQRate
+        exp_alerts:
+          - exp_labels:
+              job: application
+              instance: local
+              severity: warning
+            exp_annotations:
+              summary: Recent source invalid rate exceeded 5%
+              description: More than 5% of at least 20 observed source records in five minutes are invalid. Fault profile intentionally exercises this alert. See OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md.
+  - name: idle-stream-and-failed-observer-do-not-alert
+    interval: 1m
+    input_series:
+      - series: 'pipeline_audit_freshness_seconds{job="application",instance="local"}'
+        values: '900+60x10'
+      - series: 'pipeline_audit_recent_rows{job="application",instance="local"}'
+        values: '0+0x10'
+      - series: 'pipeline_input_events_window{job="application",instance="local",outcome="valid"}'
+        values: '0+0x10'
+      - series: 'pipeline_invalid_fraction_window{job="application",instance="local"}'
+        values: '0.2+0x10'
+      - series: 'pipeline_input_events_window{job="application",instance="local",outcome="invalid"}'
+        values: '50+0x10'
+      - series: 'pipeline_metrics_collection_success{job="application",instance="local",source="kafka_source"}'
+        values: '0+0x10'
+      - series: 'pipeline_metrics_collection_success{job="application",instance="local",source="postgres"}'
+        values: '1+0x10'
+      - series: 'pipeline_observer_coverage_start_timestamp_seconds{job="application",instance="local"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: HighDLQRate
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: PipelineAuditStalled
+        exp_alerts: []
