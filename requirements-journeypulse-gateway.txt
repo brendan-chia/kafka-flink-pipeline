@@ -1,0 +1,5 @@
+-r requirements-journeypulse.txt
+fastapi==0.115.12
+pydantic==2.11.5
+uvicorn==0.34.3
+prometheus_client==0.21.1

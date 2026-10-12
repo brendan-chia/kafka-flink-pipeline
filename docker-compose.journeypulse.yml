@@ -1,0 +1,121 @@
+# Optional one-shot foundation setup, using the existing broker and database.
+# Base Compose and existing transaction/DataLens workflows remain independent.
+services:
+  journeypulse-bootstrap:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.journeypulse
+    environment:
+      JOURNEYPULSE_KAFKA_BOOTSTRAP: kafka:9092
+      JOURNEYPULSE_POSTGRES_HOST: postgres
+      JOURNEYPULSE_POSTGRES_PORT: '5432'
+      JOURNEYPULSE_POSTGRES_DB: ${JOURNEYPULSE_POSTGRES_DB:-grabevents}
+      JOURNEYPULSE_POSTGRES_USER: ${JOURNEYPULSE_POSTGRES_USER:-grabuser}
+      JOURNEYPULSE_POSTGRES_PASSWORD: ${JOURNEYPULSE_POSTGRES_PASSWORD:-grabpass}
+    depends_on:
+      - kafka
+      - postgres
+    restart: 'no'
+
+  journeypulse-gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.journeypulse-gateway
+    environment:
+      JOURNEYPULSE_KAFKA_BOOTSTRAP: kafka:9092
+      JOURNEYPULSE_SOURCE_KEY: ${JOURNEYPULSE_SOURCE_KEY:-journeypulse-local-source-key}
+      JOURNEYPULSE_SIGNING_KEY: ${JOURNEYPULSE_SIGNING_KEY:-journeypulse-local-signing-key-change-this}
+      JOURNEYPULSE_SOURCES_JSON: ${JOURNEYPULSE_SOURCES_JSON:-}
+    ports:
+      - '127.0.0.1:8020:8020'
+    depends_on:
+      journeypulse-bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8020/health/live", timeout=3)']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  journeypulse-customers:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.journeypulse-customers
+    environment:
+      JOURNEYPULSE_POSTGRES_HOST: postgres
+      JOURNEYPULSE_POSTGRES_DB: ${JOURNEYPULSE_POSTGRES_DB:-grabevents}
+      JOURNEYPULSE_POSTGRES_USER: ${JOURNEYPULSE_SERVING_USER:-grabuser}
+      JOURNEYPULSE_POSTGRES_PASSWORD: ${JOURNEYPULSE_SERVING_PASSWORD:-grabpass}
+      JOURNEYPULSE_SOURCE_KEY: ${JOURNEYPULSE_SOURCE_KEY:-journeypulse-local-source-key}
+      JOURNEYPULSE_SIGNING_KEY: ${JOURNEYPULSE_SIGNING_KEY:-journeypulse-local-signing-key-change-this}
+      JOURNEYPULSE_SOURCES_JSON: ${JOURNEYPULSE_SOURCES_JSON:-}
+    ports:
+      - '127.0.0.1:8021:8021'
+    depends_on:
+      journeypulse-bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ['CMD', 'python', '-c', 'import urllib.request; urllib.request.urlopen("http://localhost:8021/health/live", timeout=3)']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  journeypulse-jobmanager:
+    &journeypulse-flink
+    image: journeypulse-pyflink:2.2.1
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.journeypulse-processor
+    command: jobmanager
+    volumes:
+      - journeypulse_state:/opt/flink/journeypulse-state
+    environment:
+      &journeypulse-flink-env
+      JOURNEYPULSE_KAFKA_BOOTSTRAP: kafka:9092
+      JOURNEYPULSE_POSTGRES_HOST: postgres
+      JOURNEYPULSE_POSTGRES_DB: ${JOURNEYPULSE_POSTGRES_DB:-grabevents}
+      JOURNEYPULSE_POSTGRES_USER: ${JOURNEYPULSE_PROCESSOR_USER:-grabuser}
+      JOURNEYPULSE_POSTGRES_PASSWORD: ${JOURNEYPULSE_PROCESSOR_PASSWORD:-grabpass}
+      JOURNEYPULSE_CONSUMER_GROUP: journeypulse-profiles-v1
+      JOURNEYPULSE_CHECKPOINT_DIR: file:///opt/flink/journeypulse-state/checkpoints
+      JOURNEYPULSE_SAVEPOINT_DIR: file:///opt/flink/journeypulse-state/savepoints
+      JOURNEYPULSE_RESTORE_PATH: ${JOURNEYPULSE_RESTORE_PATH:-}
+      JOURNEYPULSE_PARALLELISM: ${JOURNEYPULSE_PARALLELISM:-1}
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: journeypulse-jobmanager
+        rest.address: journeypulse-jobmanager
+        rest.bind-address: 0.0.0.0
+        taskmanager.numberOfTaskSlots: 3
+        jobmanager.memory.process.size: 1024m
+        taskmanager.memory.process.size: 2048m
+    ports:
+      - '127.0.0.1:8082:8081'
+    depends_on:
+      journeypulse-bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', 'http://localhost:8081/overview']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  journeypulse-taskmanager:
+    <<: *journeypulse-flink
+    command: taskmanager
+    ports: []
+    healthcheck: {disable: true}
+    depends_on:
+      journeypulse-jobmanager: {condition: service_healthy}
+
+  journeypulse-processor:
+    <<: *journeypulse-flink
+    command: ['flink', 'run', '--target', 'remote', '--jobmanager', 'journeypulse-jobmanager:8081', '--python', '/opt/app/scripts/journeypulse_processor.py']
+    ports: []
+    healthcheck: {disable: true}
+    depends_on:
+      journeypulse-jobmanager: {condition: service_healthy}
+      journeypulse-taskmanager: {condition: service_started}
+    restart: 'no'
+
+volumes:
+  journeypulse_state:

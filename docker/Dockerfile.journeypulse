@@ -1,0 +1,10 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements-journeypulse.txt ./
+RUN pip install --no-cache-dir -r requirements-journeypulse.txt
+COPY journeypulse/ ./journeypulse/
+COPY contracts/journeypulse/ ./contracts/journeypulse/
+COPY scripts/journeypulse.py ./scripts/journeypulse.py
+USER 10001:10001
+ENTRYPOINT ["python", "scripts/journeypulse.py"]
+CMD ["bootstrap"]

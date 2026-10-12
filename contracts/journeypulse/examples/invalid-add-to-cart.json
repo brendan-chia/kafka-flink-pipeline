@@ -1,0 +1,13 @@
+{
+  "event_id": "evt_003",
+  "event_name": "add_to_cart",
+  "schema_version": 1,
+  "user_id": "u123",
+  "session_id": "s456",
+  "occurred_at": "2026-10-12T08:02:00Z",
+  "properties": {
+    "cart_id": "c789",
+    "restaurant_id": "r88",
+    "quantity": 0
+  }
+}

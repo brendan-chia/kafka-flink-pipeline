@@ -1,0 +1,5 @@
+# Small standalone foundation; no Flink, DataLens or LLM dependencies.
+jsonschema==4.26.0
+rfc3339-validator==0.1.4
+kafka-python==2.0.2
+psycopg2-binary==2.9.9

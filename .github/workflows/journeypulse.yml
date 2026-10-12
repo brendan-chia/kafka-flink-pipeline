@@ -1,0 +1,51 @@
+name: JourneyPulse foundation, capture and profiles
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements-journeypulse-gateway.txt httpx==0.28.1
+      - run: python -m unittest discover -s tests -p 'test_journeypulse*.py' -v
+      - run: node --test journeypulse/sdk/journeypulse.test.mjs
+      - run: python scripts/journeypulse.py validate
+      - run: docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml config --quiet
+      - name: Create and check the foundation twice on shared infrastructure
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml up -d kafka postgres
+          docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml run --rm --build journeypulse-bootstrap
+          docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml run --rm journeypulse-bootstrap
+          docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml run --rm journeypulse-bootstrap check
+          docker exec postgres psql -U grabuser -d grabevents -v ON_ERROR_STOP=1 -c 'SELECT count(*) FROM public.processed_events; SELECT count(*) FROM datalens.metrics;'
+      - name: Verify SDK ingestion and quarantine against Kafka
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml up -d --build journeypulse-gateway
+          python tests/check_journeypulse_capture.py
+      - name: Verify transactional profile persistence against PostgreSQL
+        run: |
+          docker exec -i postgres psql -U grabuser -d grabevents -v ON_ERROR_STOP=1 < journeypulse/sql/roles.sql
+          JOURNEYPULSE_CHECK_ROLES=1 python tests/check_journeypulse_profiles_db.py
+      - name: Build the dedicated PyFlink graph and run the customer journey with replay
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml build journeypulse-processor
+          docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml run --rm --no-deps --entrypoint python journeypulse-processor /opt/app/tests/check_journeypulse_plan.py
+          docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml up -d --build journeypulse-customers journeypulse-processor
+          python tests/check_journeypulse_profiles.py --restart
+      - name: Collect runtime logs
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml logs --no-color
+      - name: Stop CI containers
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml down

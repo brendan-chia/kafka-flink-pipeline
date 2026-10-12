@@ -1,0 +1,10 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements-journeypulse.txt requirements-journeypulse-gateway.txt ./
+RUN pip install --no-cache-dir -r requirements-journeypulse-gateway.txt
+COPY journeypulse/ ./journeypulse/
+COPY contracts/journeypulse/ ./contracts/journeypulse/
+COPY scripts/journeypulse_gateway.py ./scripts/journeypulse_gateway.py
+USER 10001:10001
+EXPOSE 8020
+CMD ["python", "scripts/journeypulse_gateway.py", "--host", "0.0.0.0"]

@@ -309,3 +309,16 @@ Phase three adds bounded OpenAI-assisted investigations and an interface alongsi
 
 Phase-four benchmark, reports and isolated manual-repair demo:
 [DATALENS_EVALUATION.md](DATALENS_EVALUATION.md).
+
+## JourneyPulse customer intelligence
+
+The optional [JourneyPulse module](journeypulse/README.md) adds a separate food-ordering
+clickstream module using the existing Kafka and PostgreSQL services. Phases 1 and 2 include
+five versioned contracts, dedicated topics, a repeatable contract catalogue bootstrap,
+an authenticated FastAPI gateway, a JavaScript tracking SDK and lossless quarantine.
+Phase 3 adds a separate PyFlink processor, replay-safe customer summaries,
+authenticated onboarding and a customer-serving API. See the
+[six-phase development guides](journeypulse/README.md#development-phases),
+[Phase 1 setup](docs/journeypulse/phase-1-foundation.md) and
+[Phase 2 API/SDK guide](docs/journeypulse/phase-2-capture.md) and
+[Phase 3 profiles guide](docs/journeypulse/phase-3-profiles.md).

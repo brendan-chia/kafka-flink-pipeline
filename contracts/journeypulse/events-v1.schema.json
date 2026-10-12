@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:journeypulse:events:v1",
+  "title": "JourneyPulse clickstream event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "event_name",
+    "schema_version",
+    "user_id",
+    "session_id",
+    "occurred_at",
+    "properties"
+  ],
+  "properties": {
+    "event_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "event_name": {
+      "type": "string",
+      "enum": [
+        "session_started",
+        "restaurant_view",
+        "add_to_cart",
+        "checkout_started",
+        "order_completed"
+      ]
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "user_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "session_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "not": {
+        "pattern": "\\s"
+      }
+    },
+    "properties": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}(?![\\s\\S])"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "session_started"
+          }
+        },
+        "required": [
+          "event_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "platform"
+            ],
+            "properties": {
+              "platform": {
+                "type": "string",
+                "enum": [
+                  "web",
+                  "ios",
+                  "android"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "restaurant_view"
+          }
+        },
+        "required": [
+          "event_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "restaurant_id"
+            ],
+            "properties": {
+              "restaurant_id": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "add_to_cart"
+          }
+        },
+        "required": [
+          "event_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "cart_id",
+              "restaurant_id",
+              "item_id",
+              "quantity"
+            ],
+            "properties": {
+              "cart_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "restaurant_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "item_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "checkout_started"
+          }
+        },
+        "required": [
+          "event_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "cart_id"
+            ],
+            "properties": {
+              "cart_id": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "order_completed"
+          }
+        },
+        "required": [
+          "event_name"
+        ]
+      },
+      "then": {
+        "properties": {
+          "properties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "order_id",
+              "cart_id",
+              "restaurant_id"
+            ],
+            "properties": {
+              "order_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "cart_id": {
+                "$ref": "#/$defs/identifier"
+              },
+              "restaurant_id": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
