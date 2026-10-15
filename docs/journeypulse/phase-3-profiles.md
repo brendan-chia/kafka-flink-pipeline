@@ -1,6 +1,6 @@
 # Phase 3 - Customer profiles and serving
 
-Status: implemented. Requires Phase 2's transport envelope. Phase 4 segments remain unimplemented.
+Status: implemented. Requires Phase 2's transport envelope. Phase 4 now adds segments and targeting; its guide documents migration 003, the scheduler and updated readiness requirement.
 
 ## Setup and migrations
 
@@ -16,7 +16,11 @@ docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml up -d --
 
 Bootstrap applies `001_foundation.sql` and additive `002_profiles.sql` inside the existing serialized database transaction. Rerunning preserves rows and migration timestamps. Rerun bootstrap on existing volumes; initialization scripts alone do not migrate them. `check` requires both migrations. Contract version remains 1. Public and DataLens tables are untouched.
 
-Customer API: http://127.0.0.1:8021/docs. Dedicated Flink REST/UI: http://127.0.0.1:8082. Gateway remains on 8020. `/health/live` checks the API process; `/v1/health/ready` checks database access and migration 2. The foreground processor submission is not automatically resubmitted, preventing accidental second jobs.
+Current bootstrap also applies Phase 4's additive `003_segments.sql` and registers
+segment definitions; `check` now requires migration 3 as well. See the Phase 4
+guide before upgrading a running processor or changing rule thresholds.
+
+Customer API: http://127.0.0.1:8021/docs. Dedicated Flink REST/UI: http://127.0.0.1:8082. Gateway remains on 8020. `/health/live` checks the API process; `/v1/health/ready` checks database access and migration 3. The foreground processor submission is not automatically resubmitted, preventing accidental second jobs.
 
 Host API:
 
@@ -79,6 +83,11 @@ Each record commits one PostgreSQL transaction:
 4. Update event counts, distinct order count, occurrence/receipt maxima, processing time and durable revision only for a new event contribution. Commit receipts, identities and summary together.
 
 Counters increment only behind durable uniqueness in that same transaction. A crash after database commit and before checkpointing cannot repeat the increment. Concurrent decisions serialize through event/customer locks. No processor snapshot is written, so replay of an old checkpoint cannot overwrite newer durable state. Latest activity uses maximum occurrence time; arbitrarily late valid events contribute without moving it backwards. No watermark discards late behavior.
+
+Phase 4 extends that same commit with rolling views, terminal cart state and
+memberships. Its periodic scheduler does not change behavioral revision or
+`processed_at`. Its targeting reads reuse customer authorization and current
+consent; see [the Phase 4 guide](phase-4-segments.md) for timing and freshness.
 
 `event_counts.order_completed` counts event notifications under the event-ID retention rules. `completed_orders` counts distinct orders permanently. A new event ID about an existing order adds a notification, not an order. `latest_order_at` is the maximum first accepted occurrence time across distinct orders; later notifications do not rewrite order facts. `latest_activity_at` reflects all accepted notification occurrence times.
 

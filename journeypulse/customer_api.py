@@ -7,6 +7,8 @@ from fastapi.security import HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 import psycopg2
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import Response
+from prometheus_client import CollectorRegistry, Counter, CONTENT_TYPE_LATEST, generate_latest
 
 from .auth import GatewaySettings, Tokens, identifier
 from .contracts import EVENT_NAMES
@@ -54,7 +56,10 @@ def create_app(settings=None, store=None, clock=time.time):
     store = store or ProfileStore()
     tokens = Tokens(settings, clock, audience='journeypulse-customers')
     limiter = RateLimit(settings.requests_per_minute)
-    app = FastAPI(title='JourneyPulse customer API', version='0.3.0')
+    app = FastAPI(title='JourneyPulse customer API', version='0.4.0')
+    registry = CollectorRegistry()
+    targeting_requests = Counter('journeypulse_targeting_requests_total',
+        'Authorized targeting reads by bounded result.', ['result'], registry=registry)
     app.add_middleware(CORSMiddleware,
         allow_origins=sorted({o for s in settings.sources for o in s.origins}),
         allow_methods=['GET', 'POST', 'PATCH'], allow_headers=['Authorization', 'Content-Type'])
@@ -108,6 +113,10 @@ def create_app(settings=None, store=None, clock=time.time):
     def live():
         return {'status': 'alive'}
 
+    @app.get('/metrics', include_in_schema=False)
+    def metrics():
+        return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
+
     @app.get('/v1/health/ready')
     def ready():
         if not database(store.ready):
@@ -138,6 +147,21 @@ def create_app(settings=None, store=None, clock=time.time):
     def get(user_id: str, claims=Depends(authenticate)):
         authorize(user_id, claims)
         return read(user_id)
+
+    @app.get('/v1/customers/{user_id}/targeting')
+    def targeting(user_id: str, claims=Depends(authenticate)):
+        authorize(user_id, claims)
+        try:
+            result = database(store.targeting, user_id)
+        except HTTPException:
+            targeting_requests.labels('unavailable').inc()
+            raise
+        if result is None:
+            targeting_requests.labels('absent').inc()
+            raise HTTPException(404, 'customer_not_found')
+        status = result['freshness']['status']
+        targeting_requests.labels(status).inc()
+        return result
 
     @app.patch('/v1/customers/{user_id}')
     def update(user_id: str, body: Attributes, claims=Depends(authenticate)):

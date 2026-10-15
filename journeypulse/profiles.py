@@ -10,6 +10,7 @@ from jsonschema import Draft202012Validator
 from .auth import identifier
 from .config import Settings, EVENT_TOPIC
 from .contracts import FORMAT_CHECKER, decode_json, load_schema, validation_errors
+from .segments import SegmentSettings, evaluate_customer, record_behavior
 
 DEDUP_SECONDS = 7 * 24 * 3600
 VALIDATOR = Draft202012Validator(load_schema(), format_checker=FORMAT_CHECKER)
@@ -43,9 +44,10 @@ def decode_transport(payload, key):
 
 
 class ProfileStore:
-    def __init__(self, settings=None, connect=None):
+    def __init__(self, settings=None, connect=None, segment_settings=None):
         self.settings = settings or Settings.from_environment()
         self.connect = connect or (lambda: psycopg2.connect(**self.settings.database_parameters()))
+        self.segment_settings = segment_settings or SegmentSettings.from_environment()
 
     def apply(self, topic, partition, offset, key, payload):
         """Commit receipt + event identity + order identity + summary atomically.
@@ -121,6 +123,8 @@ class ProfileStore:
                     latest_received_at=GREATEST(latest_received_at,%s),
                     processed_at=clock_timestamp(), revision=revision+1 WHERE user_id=%s""",
                     (event['event_name'], event['event_name'], order_delta, occurred, order_time, received, user))
+                record_behavior(cursor, user, event, occurred)
+                evaluate_customer(cursor, user, self.segment_settings)
                 return 'applied'
         finally:
             connection.close()
@@ -174,7 +178,72 @@ class ProfileStore:
         connection = self.connect()
         try:
             with connection, connection.cursor() as cursor:
-                cursor.execute('SELECT version FROM journeypulse.schema_migrations WHERE version=2')
+                cursor.execute('SELECT version FROM journeypulse.schema_migrations WHERE version=3')
                 return cursor.fetchone() is not None
+        finally:
+            connection.close()
+
+    def evaluate_due(self, user_id=None):
+        """Bounded catch-up; share the processor's per-customer behavioral lock.
+
+        No in-memory timer is the correctness authority. Missed deadlines remain
+        due in PostgreSQL; multiple workers skip each other's locked customers.
+        An optional customer scope supports isolated operational probes.
+        """
+        connection = self.connect()
+        try:
+            with connection, connection.cursor() as cursor:
+                cursor.execute("SET LOCAL statement_timeout = '15s'")
+                cursor.execute("SET LOCAL lock_timeout = '10s'")
+                cursor.execute('''SELECT b.user_id FROM journeypulse.behavioral_summaries b
+                    LEFT JOIN journeypulse.segment_evaluations e USING(user_id)
+                    WHERE (e.user_id IS NULL OR e.rule_version <> %s OR e.next_evaluation_at <= clock_timestamp())
+                    AND (%s IS NULL OR b.user_id=%s)
+                    ORDER BY COALESCE(e.next_evaluation_at,'-infinity'::timestamptz),b.user_id
+                    LIMIT %s FOR UPDATE OF b SKIP LOCKED''',
+                    (self.segment_settings.version, user_id, user_id, self.segment_settings.batch_size))
+                users = [r[0] for r in cursor.fetchall()]
+                for user in users:
+                    evaluate_customer(cursor, user, self.segment_settings)
+                return len(users)
+        finally:
+            connection.close()
+
+    def targeting(self, user_id):
+        connection = self.connect()
+        try:
+            with connection, connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                # Consent, behavior and memberships come from the same read-only snapshot.
+                cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+                cursor.execute("SET LOCAL statement_timeout = '5s'")
+                cursor.execute('''SELECT c.user_id,c.marketing_consent,c.onboarded_at,c.consent_updated_at,
+                    b.processed_at,e.rule_version,e.evaluated_at,e.next_evaluation_at,
+                    clock_timestamp() AS served_at FROM journeypulse.customers c
+                    LEFT JOIN journeypulse.behavioral_summaries b USING(user_id)
+                    LEFT JOIN journeypulse.segment_evaluations e USING(user_id) WHERE c.user_id=%s''', (user_id,))
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                cursor.execute('''SELECT segment,member,reason,evidence,evaluated_at,valid_until
+                    FROM journeypulse.segment_memberships WHERE user_id=%s AND rule_version=%s''',
+                    (user_id, self.segment_settings.version))
+                from .segments import targeting_response
+                return targeting_response(dict(row), [dict(r) for r in cursor.fetchall()], self.segment_settings)
+        finally:
+            connection.close()
+
+    def segment_statistics(self):
+        connection = self.connect()
+        try:
+            with connection, connection.cursor() as cursor:
+                cursor.execute('''SELECT segment,count(*) FROM journeypulse.segment_memberships
+                    WHERE rule_version=%s AND member AND (valid_until IS NULL OR valid_until > clock_timestamp())
+                    GROUP BY segment''', (self.segment_settings.version,))
+                counts = dict(cursor.fetchall())
+                cursor.execute('''SELECT COALESCE(max(EXTRACT(EPOCH FROM
+                    clock_timestamp()-e.next_evaluation_at)),0)
+                    FROM journeypulse.behavioral_summaries b
+                    LEFT JOIN journeypulse.segment_evaluations e USING(user_id)''')
+                return counts, max(0, cursor.fetchone()[0])
         finally:
             connection.close()

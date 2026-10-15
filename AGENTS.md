@@ -39,7 +39,7 @@ guides include `CORRECTNESS_AND_RECOVERY.md`, `EVENT_TIME_BUSINESS_LOGIC.md`,
 `OPERATIONAL_DASHBOARDS_AND_BENCHMARKS.md`, `ICEBERG_AND_REPLAY.md`, and
 `DATALENS_{EVIDENCE,API,ASSISTANT,EVALUATION}.md`.
 
-JourneyPulse phases 1–3 are implemented; phases 4–6 are planned. Consult
+JourneyPulse phases 1–4 are implemented; phases 5–6 are planned. Consult
 `journeypulse/README.md` and `docs/journeypulse/` before extending the module.
 Keep implementation status and measured evidence accurate when updating guides.
 

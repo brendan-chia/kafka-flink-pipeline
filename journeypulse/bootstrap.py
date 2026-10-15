@@ -8,6 +8,7 @@ from psycopg2.extras import Json
 
 from .config import Settings, TOPICS, PARTITIONS, REPLICATION_FACTOR, RETENTION_MS
 from .contracts import ROOT, EVENT_NAMES, SCHEMA_VERSION, event_schema
+from .segments import SegmentSettings, register_rules
 
 TOPIC_CONFIG = {'cleanup.policy': 'delete', 'retention.ms': str(RETENTION_MS),
                 'message.timestamp.type': 'LogAppendTime'}
@@ -79,6 +80,12 @@ def ensure_database(connection, create):
             cursor.execute('SELECT version FROM journeypulse.schema_migrations WHERE version = 2')
             if cursor.fetchone() is None:
                 raise ValueError('JourneyPulse profiles migration is missing; rerun bootstrap')
+            if create:
+                cursor.execute((ROOT / 'journeypulse/sql/003_segments.sql').read_text(encoding='utf-8'))
+            cursor.execute('SELECT version FROM journeypulse.schema_migrations WHERE version = 3')
+            if cursor.fetchone() is None:
+                raise ValueError('JourneyPulse segments migration is missing; rerun bootstrap')
+            register_rules(cursor, SegmentSettings.from_environment(), create)
             for name in EVENT_NAMES:
                 definition = event_schema(name)
                 if create:
@@ -115,5 +122,5 @@ def run(create=False):
     return {'status': 'ready', 'mode': 'bootstrap' if create else 'read-only check',
             'topics': list(TOPICS), 'partitions': PARTITIONS,
             'postgres_schema': 'journeypulse', 'schema_version': SCHEMA_VERSION,
-            'database_migration_version': 2,
+            'database_migration_version': 3,
             'registered_events': list(EVENT_NAMES)}

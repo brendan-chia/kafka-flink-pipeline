@@ -1,11 +1,18 @@
 # Optional one-shot foundation setup, using the existing broker and database.
 # Base Compose and existing transaction/DataLens workflows remain independent.
+x-journeypulse-segments: &journeypulse-segments
+  JOURNEYPULSE_SEGMENT_WINDOW_SECONDS: ${JOURNEYPULSE_SEGMENT_WINDOW_SECONDS:-600}
+  JOURNEYPULSE_SEGMENT_ABANDON_SECONDS: ${JOURNEYPULSE_SEGMENT_ABANDON_SECONDS:-600}
+  JOURNEYPULSE_SEGMENT_POLL_SECONDS: ${JOURNEYPULSE_SEGMENT_POLL_SECONDS:-5}
+  JOURNEYPULSE_SEGMENT_STALE_SECONDS: ${JOURNEYPULSE_SEGMENT_STALE_SECONDS:-30}
+  JOURNEYPULSE_SEGMENT_BATCH_SIZE: ${JOURNEYPULSE_SEGMENT_BATCH_SIZE:-100}
 services:
   journeypulse-bootstrap:
     build:
       context: .
       dockerfile: docker/Dockerfile.journeypulse
     environment:
+      <<: *journeypulse-segments
       JOURNEYPULSE_KAFKA_BOOTSTRAP: kafka:9092
       JOURNEYPULSE_POSTGRES_HOST: postgres
       JOURNEYPULSE_POSTGRES_PORT: '5432'
@@ -43,6 +50,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.journeypulse-customers
     environment:
+      <<: *journeypulse-segments
       JOURNEYPULSE_POSTGRES_HOST: postgres
       JOURNEYPULSE_POSTGRES_DB: ${JOURNEYPULSE_POSTGRES_DB:-grabevents}
       JOURNEYPULSE_POSTGRES_USER: ${JOURNEYPULSE_SERVING_USER:-grabuser}
@@ -61,9 +69,26 @@ services:
       retries: 3
     restart: unless-stopped
 
+  journeypulse-segments:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.journeypulse-customers
+    command: ['python', '-m', 'journeypulse.segment_worker']
+    environment:
+      <<: *journeypulse-segments
+      JOURNEYPULSE_POSTGRES_HOST: postgres
+      JOURNEYPULSE_POSTGRES_DB: ${JOURNEYPULSE_POSTGRES_DB:-grabevents}
+      JOURNEYPULSE_POSTGRES_USER: ${JOURNEYPULSE_PROCESSOR_USER:-grabuser}
+      JOURNEYPULSE_POSTGRES_PASSWORD: ${JOURNEYPULSE_PROCESSOR_PASSWORD:-grabpass}
+    ports:
+      - '127.0.0.1:8022:8022'
+    depends_on:
+      journeypulse-bootstrap: {condition: service_completed_successfully}
+    restart: unless-stopped
+
   journeypulse-jobmanager:
     &journeypulse-flink
-    image: journeypulse-pyflink:2.2.1
+    image: ${JOURNEYPULSE_FLINK_IMAGE:-journeypulse-pyflink:2.2.1}
     build:
       context: .
       dockerfile: docker/Dockerfile.journeypulse-processor
@@ -72,6 +97,7 @@ services:
       - journeypulse_state:/opt/flink/journeypulse-state
     environment:
       &journeypulse-flink-env
+      <<: *journeypulse-segments
       JOURNEYPULSE_KAFKA_BOOTSTRAP: kafka:9092
       JOURNEYPULSE_POSTGRES_HOST: postgres
       JOURNEYPULSE_POSTGRES_DB: ${JOURNEYPULSE_POSTGRES_DB:-grabevents}

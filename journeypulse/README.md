@@ -2,7 +2,7 @@
 
 JourneyPulse connects food-ordering behavior to customer intelligence using this repository's Kafka, PostgreSQL and monitoring infrastructure.
 
-Phases 1, 2 and 3 are implemented: contracts, isolated setup, an authenticated gateway and SDK, quarantine/metrics, a separate PyFlink profile processor, replay-safe PostgreSQL summaries, onboarding and an authenticated customer API. Segments, targeting and the ordering UI remain in later phases.
+Phases 1-4 are implemented: contracts, isolated setup, an authenticated gateway and SDK, quarantine/metrics, a separate PyFlink profile processor, replay-safe PostgreSQL summaries, onboarding, versioned segments and consent-aware authenticated targeting. The ordering UI and reminder delivery are not included.
 
 ## Development phases
 
@@ -11,7 +11,7 @@ Phases 1, 2 and 3 are implemented: contracts, isolated setup, an authenticated g
 | 1 | [Foundation and contracts](../docs/journeypulse/phase-1-foundation.md) | Implemented | Isolated clickstream foundation |
 | 2 | [Capture and validation](../docs/journeypulse/phase-2-capture.md) | Implemented | Browser actions reach Kafka through a validated gateway |
 | 3 | [Profiles and serving](../docs/journeypulse/phase-3-profiles.md) | Implemented | Separate Flink processor and authenticated profiles |
-| 4 | [Segments and targeting](../docs/journeypulse/phase-4-segments.md) | Planned | Behavior and consent determine eligibility |
+| 4 | [Segments and targeting](../docs/journeypulse/phase-4-segments.md) | Implemented | Behavior and consent determine eligibility |
 | 5 | [Demo and analytics](../docs/journeypulse/phase-5-demo.md) | Planned | A visible food-ordering journey and funnel |
 | 6 | [Reliability and evidence](../docs/journeypulse/phase-6-reliability.md) | Planned | Measured performance and recovery evidence |
 
@@ -108,6 +108,51 @@ docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml up -d --
 
 The customer API serves 8021; the dedicated Flink UI uses 8082. A trusted backend obtains customer-scoped tokens from the customer API's `POST /v1/sessions`. Onboard with `POST /v1/customers`, read `GET /v1/customers/{user_id}`, and update language/explicit consent with `PATCH /v1/customers/{user_id}`. Tracking tokens cannot authorize these operations. The [Phase 3 guide](../docs/journeypulse/phase-3-profiles.md) provides runnable examples, migrations, optional database roles and recovery instructions.
 
-Pre-onboarding events create a placeholder with consent false. Behavior never overwrites attributes. Durable transactional Kafka receipts protect checkpoint replay; event IDs deduplicate new deliveries for seven days from processing, and permanent order identities protect order totals. After the event-ID window, a new-offset notification can count again. Receipts/orders grow indefinitely and require consistent backups. Freshness describes summary age, not consumer lag. Phase 4 segments are not implemented.
+Pre-onboarding events create a placeholder with consent false. Behavior never overwrites attributes. Durable transactional Kafka receipts protect checkpoint replay; event IDs deduplicate new deliveries for seven days from processing, and permanent order identities protect order totals. After the event-ID window, a new-offset notification can count again. Receipts/orders grow indefinitely and require consistent backups. Freshness describes summary age, not consumer lag.
 
 Phase 3 sources: `profiles.py`, `processor.py`, `customer_api.py`, `sql/002_profiles.sql`, optional `sql/roles.sql`, two new launch scripts/Dockerfiles, `requirements-journeypulse-processor.txt`, offline profile tests and `tests/check_journeypulse_profiles*.py`. Offline checks, actual Flink graph construction and real PostgreSQL tests passed locally using an isolated temporary PostgreSQL 18 instance. Full Kafka/Flink integration remains unverified locally because Docker's engine and Kafka were unavailable; executable probes and CI cover it.
+
+## Phase 4 quick start
+
+Pause JourneyPulse writers, rerun bootstrap for additive migration 003 and rule
+registration, and apply updated optional `sql/roles.sql` when using capability
+logins. Resume the processor and start the scheduler:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml run --rm --build journeypulse-bootstrap
+docker compose -f docker-compose.yml -f docker-compose.journeypulse.yml up -d --build journeypulse-gateway journeypulse-customers journeypulse-processor journeypulse-segments
+.\.venv\Scripts\python.exe tests/check_journeypulse_segments_db.py
+.\.venv\Scripts\python.exe scripts/demo_journeypulse_targeting.py
+```
+
+`GET /v1/customers/{user_id}/targeting` uses the same customer-scoped token as
+profile reads. It returns per-segment eligibility, reasons/counts, current consent,
+rule version, evaluation time and `current`/`stale`/`unevaluated` freshness.
+Missing consent is ineligible; revocation affects the next read immediately.
+
+Default rules: five restaurant views in the trailing ten minutes; an unresolved
+cart ten minutes after its latest add occurrence; three distinct completed orders.
+Checkout does not postpone or resolve abandonment. Matching completion resolves
+only that customer's cart, permanently, even when delayed or replayed. A separate
+database-clock worker polls every five seconds, expires active membership during
+silence and catches up after downtime. Evaluations older than 30 seconds are
+ineligible; freshness does not establish consumer lag.
+
+For short tests set `JOURNEYPULSE_SEGMENT_ABANDON_SECONDS=5`,
+`JOURNEYPULSE_SEGMENT_WINDOW_SECONDS=30` and `JOURNEYPULSE_SEGMENT_POLL_SECONDS=1`
+consistently before bootstrap/startup. Custom thresholds get a distinct immutable
+rule version. The scenario's `--restart-worker` option tests catch-up across an
+idle deadline on the dedicated Compose stack. Worker metrics use 8022; API
+targeting metrics use `/metrics` on 8021.
+
+The [Phase 4 guide](../docs/journeypulse/phase-4-segments.md) provides timing,
+API examples, configuration and verification commands. Phase 3 did not retain
+individual views/open-cart adds: those rules begin with newly accepted Phase 4
+events. Completed carts are backfilled and existing distinct orders remain
+usable. Cart IDs must not be reused after completion; durable carts/receipts/orders
+grow indefinitely. Results remain provisional until delayed events arrive.
+
+Phase 4 sources: `segments.py`, `segment_worker.py`, `sql/003_segments.sql`,
+targeting additions to `profiles.py`/`customer_api.py`, deterministic segment tests,
+`tests/check_journeypulse_segments_db.py` and `scripts/demo_journeypulse_targeting.py`.
+CI adds real persistence/capability tests and silent abandonment with worker restart.

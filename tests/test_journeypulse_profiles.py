@@ -60,7 +60,8 @@ class ProcessorTests(unittest.TestCase):
             self.assertFalse(any('UPDATE journeypulse.behavioral_summaries' in c.args[0] for c in cursor.execute.call_args_list))
 
     def test_late_activity_and_order_identity_are_database_guarded(self):
-        store, connection, cursor = self.store([(1,), ('event',), None])
+        store, connection, cursor = self.store([(1,), ('event',), None,
+            (datetime.now(timezone.utc),), (0,)])
         self.assertEqual(store.apply('journeypulse-events', 0, 1, 'u123', json.dumps(envelope(4))), 'applied')
         calls = cursor.execute.call_args_list
         summary = next(c for c in calls if 'UPDATE journeypulse.behavioral_summaries' in c.args[0])

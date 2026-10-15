@@ -19,3 +19,8 @@ GRANT SELECT ON journeypulse.customers, journeypulse.behavioral_summaries TO jou
 GRANT INSERT(user_id) ON journeypulse.customers TO journeypulse_serving;
 GRANT UPDATE(preferred_language, marketing_consent, consent_updated_at,
              onboarded_at, attributes_updated_at) ON journeypulse.customers TO journeypulse_serving;
+GRANT SELECT ON journeypulse.segment_definitions TO journeypulse_processor, journeypulse_serving;
+GRANT SELECT, INSERT, UPDATE ON journeypulse.carts, journeypulse.segment_evaluations,
+    journeypulse.segment_memberships TO journeypulse_processor;
+GRANT SELECT, INSERT, DELETE ON journeypulse.segment_views TO journeypulse_processor;
+GRANT SELECT ON journeypulse.segment_evaluations, journeypulse.segment_memberships TO journeypulse_serving;

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from journeypulse.bootstrap import ensure_topics, ensure_database, TOPIC_CONFIG
 from journeypulse.config import TOPICS, PARTITIONS, REPLICATION_FACTOR
 from journeypulse.contracts import EVENT_NAMES, event_schema
+from journeypulse.segments import SegmentSettings
 
 
 def admin_fixture():
@@ -24,7 +25,8 @@ def connection_fixture(definitions=None):
     connection = MagicMock()
     cursor = connection.cursor.return_value.__enter__.return_value
     values = definitions if definitions is not None else [(event_schema(name),) for name in EVENT_NAMES]
-    cursor.fetchone.side_effect = [(1,), (2,)] + values
+    cursor.fetchone.side_effect = [(1,), (2,), (3,)] + [
+        (d,) for d in SegmentSettings.from_environment().definitions.values()] + values
     return connection, cursor
 
 

@@ -63,7 +63,7 @@ def build_job():
         def open(self, runtime_context):
             self.store = ProfileStore()
             self.next_prune = 0
-            self.counters = {name: runtime_context.get_metric_group().counter(name)
+            self.counters = {name: runtime_context.get_metrics_group().counter(name)
                              for name in ('applied', 'duplicate', 'conflict', 'invalid', 'replay')}
 
         def map(self, row):
